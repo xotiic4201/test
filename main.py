@@ -619,8 +619,8 @@ INDEX_HTML = """
     <div class="container">
         <div class="ascii">
     /\\____/\\    /\\____/\\
-   (  o  o  )  (  o  o  )
-   (   ==   )  (   ==   )
+    ( o  o  )   ( o  o  )
+    (  ==   )   (  ==   )
     (______)    (______)
         </div>
         
