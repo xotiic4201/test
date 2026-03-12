@@ -523,7 +523,6 @@ app.add_middleware(
 # HTML TEMPLATES - Separate Pages with Stable Display
 # ============================================================================
 
-INDEX_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -600,6 +599,17 @@ INDEX_HTML = """
             color: black;
         }
         
+        .admin-button {
+            background: #000066;
+            color: #6666ff;
+            border: 2px solid #6666ff;
+        }
+        
+        .admin-button:hover {
+            background: #6666ff;
+            color: black;
+        }
+        
         .ascii {
             color: #ff0000;
             font-size: 12px;
@@ -618,24 +628,24 @@ INDEX_HTML = """
 <body>
     <div class="container">
         <div class="ascii">
-    /\\____/\\    /\\____/\\
-    ( o  o  )   ( o  o  )
-    (  ==   )   (  ==   )
+    /\____/\    /\____/\
+   (  o  o  )  (  o  o  )
+   (   ==   )  (   ==   )
     (______)    (______)
         </div>
         
         <h1>PUSSALATOR</h1>
-        <div class="subtitle">> SYSTEM CONTROL PANEL <</div>
+        <div class="subtitle">> SYSTEM ACCESS PORTAL <</div>
         
         <a href="/victim">
-            <button class="button victim-button">🔓 VICTIM PORTAL</button>
+            <button class="button victim-button">🔓 VICTIM ACCESS</button>
         </a>
         
-        <a href="/owner/login">
-            <button class="button">👑 OWNER LOGIN</button>
+        <a href="/admin/login">
+            <button class="button admin-button">👑 ADMIN LOGIN</button>
         </a>
         
-        <div class="stats" id="stats">Loading stats...</div>
+        <div class="stats" id="stats">Loading system statistics...</div>
     </div>
 
     <script>
@@ -644,14 +654,14 @@ INDEX_HTML = """
                 const r = await fetch('/api/stats');
                 const s = await r.json();
                 document.getElementById('stats').innerHTML = 
-                    `Victims: ${s.total} | Paid: ${s.paid} | BTC: ${s.btc} | Bombs: ${s.bombs}`;
+                    `Total Records: ${s.total} | Resolved: ${s.paid} | Pending: ${s.unpaid} | BTC: ${s.btc} | Active Operations: ${s.bombs}`;
             } catch(e) {
-                document.getElementById('stats').innerHTML = 'Stats temporarily unavailable';
+                document.getElementById('stats').innerHTML = 'System statistics temporarily unavailable';
             }
         }
         
         loadStats();
-        setInterval(loadStats, 10000); // Update every 10 seconds instead of 5
+        setInterval(loadStats, 10000);
     </script>
 </body>
 </html>
