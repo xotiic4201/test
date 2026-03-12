@@ -1,5 +1,5 @@
-Flask
-Flask-CORS
+fastapi
 gunicorn
 requests
 cryptography
+pydantic
