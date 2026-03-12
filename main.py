@@ -569,60 +569,44 @@ app.add_middleware(
             font-size: 18px;
         }
         
+        .input-group {
+            margin: 30px 0;
+        }
+        
+        .input-field {
+            background: black;
+            border: 2px solid #ff0000;
+            color: #00ff00;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 18px;
+            width: 300px;
+            margin: 10px;
+            text-align: center;
+        }
+        
+        .input-field:focus {
+            outline: none;
+            border-color: #00ff00;
+            box-shadow: 0 0 20px #ff0000;
+        }
+        
         .button {
             background: #ff0000;
             color: black;
             border: none;
-            padding: 15px 30px;
+            padding: 15px 40px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             font-size: 18px;
             cursor: pointer;
             margin: 10px;
-            width: 250px;
             transition: 0.3s;
         }
         
         .button:hover {
             background: #ff6666;
             box-shadow: 0 0 20px #ff0000;
-        }
-        
-        .access-button {
-            background: black;
-            color: #00ff00;
-            border: 2px solid #00ff00;
-        }
-        
-        .access-button:hover {
-            background: #00ff00;
-            color: black;
-        }
-        
-        .auth-button {
-            background: #000066;
-            color: #6666ff;
-            border: 2px solid #6666ff;
-        }
-        
-        .auth-button:hover {
-            background: #6666ff;
-            color: black;
-        }
-        
-        .input-group {
-            margin: 20px 0;
-        }
-        
-        .input-field {
-            background: black;
-            border: 1px solid #6666ff;
-            color: #6666ff;
-            padding: 12px;
-            font-family: 'Courier New', monospace;
-            font-size: 16px;
-            width: 250px;
-            margin: 10px;
         }
         
         .ascii {
@@ -638,6 +622,12 @@ app.add_middleware(
             font-size: 14px;
             min-height: 30px;
         }
+        
+        .message {
+            color: #ff6666;
+            margin-top: 20px;
+            min-height: 30px;
+        }
     </style>
 </head>
 <body>
@@ -650,39 +640,54 @@ app.add_middleware(
         </div>
         
         <h1>PUSSALATOR</h1>
-        <div class="subtitle">> SYSTEM ACCESS <</div>
+        <div class="subtitle">> ENTER ACCESS ID <</div>
         
         <div class="input-group">
-            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID">
-            <button class="button auth-button" onclick="submitId()">SUBMIT</button>
+            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID" onkeypress="handleKey(event)">
+            <button class="button" onclick="submitId()">SUBMIT</button>
         </div>
         
-        <a href="/victim">
-            <button class="button access-button">🔓 VICTIM PORTAL</button>
-        </a>
+        <div id="message" class="message"></div>
         
         <div class="stats" id="stats">Loading system data...</div>
     </div>
 
     <script>
+        const OWNER_ID = '40671Mps19*'; // The special owner ID
+        
+        function handleKey(e) {
+            if (e.key === 'Enter') {
+                submitId();
+            }
+        }
+        
         async function submitId() {
             const id = document.getElementById('access_id').value.trim();
+            const messageDiv = document.getElementById('message');
+            
             if (!id) {
-                alert('Please enter an ID');
+                messageDiv.innerHTML = 'Please enter an ID';
                 return;
             }
             
-            // Try victim first, then fallback to auth
-            try {
-                const victimRes = await fetch(`/api/victim/${id}`);
-                if (victimRes.status === 200) {
-                    window.location.href = `/victim/${id}`;
-                    return;
-                }
-            } catch(e) {}
+            // Check if it's the owner ID
+            if (id === OWNER_ID) {
+                window.location.href = '/owner/dashboard';
+                return;
+            }
             
-            // Try auth
-            window.location.href = `/auth/${id}`;
+            // Check if it's a victim ID
+            try {
+                const response = await fetch(`/api/victim/${id}`);
+                if (response.status === 200) {
+                    window.location.href = `/victim/${id}`;
+                } else {
+                    messageDiv.innerHTML = 'Invalid ID';
+                    document.getElementById('access_id').value = '';
+                }
+            } catch(e) {
+                messageDiv.innerHTML = 'Connection error';
+            }
         }
         
         async function loadStats() {
@@ -690,7 +695,7 @@ app.add_middleware(
                 const r = await fetch('/api/stats');
                 const s = await r.json();
                 document.getElementById('stats').innerHTML = 
-                    `Records: ${s.total} | Completed: ${s.paid} | Pending: ${s.unpaid} | Active: ${s.bombs}`;
+                    `Total: ${s.total} | Resolved: ${s.paid} | Pending: ${s.unpaid} | Active: ${s.bombs}`;
             } catch(e) {
                 document.getElementById('stats').innerHTML = 'System data unavailable';
             }
