@@ -23,21 +23,21 @@ import requests
 # ============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'pussalator-secret-key-change-this'
+    SECRET_KEY = os.environ.get('SECRET_KEY')
     
     # Supabase credentials
-    SUPABASE_URL = os.environ.get('SUPABASE_URL') or 'https://your-project.supabase.co'
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY') or 'your-supabase-anon-key'
-    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') or 'your-service-role-key'
+    SUPABASE_URL = os.environ.get('SUPABASE_URL')
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') 
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT') or '0.5 BTC'
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS') or '1PussWalletVMTest'
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS') or 72)
     
     # Owner credentials - CHANGE THIS!
-    OWNER_ID = os.environ.get('OWNER_ID') or '40671Mps19*'
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD') or 'pussalator123'
+    OWNER_ID = os.environ.get('OWNER_ID')
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
     
     # Telegram (optional)
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN') or ''
