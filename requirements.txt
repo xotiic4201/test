@@ -5,3 +5,4 @@ requests
 cryptography
 pydantic
 supabase
+python-jose[cryptography]
