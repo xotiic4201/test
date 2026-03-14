@@ -42,7 +42,7 @@ class Config:
     # Owner credentials for Supabase Auth
     OWNER_EMAIL = os.environ.get('OWNER_EMAIL')
     OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
-    
+     OWNER_ID = os.environ.get('OWNER_ID')
     # Telegram Bot
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
